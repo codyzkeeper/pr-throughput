@@ -1,0 +1,3 @@
+// Copy to Local.xcconfig and set the public client ID of a GitHub OAuth App.
+// Enable Device Flow in the OAuth App settings. Never put a client secret here.
+GITHUB_CLIENT_ID = your_public_oauth_client_id

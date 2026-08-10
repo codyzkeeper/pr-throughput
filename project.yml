@@ -1,0 +1,106 @@
+name: PRThroughput
+options:
+  bundleIdPrefix: app.prthroughput
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "26.0"
+configs:
+  Debug: debug
+  Release: release
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    CODE_SIGN_STYLE: Automatic
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: 0.1.0
+targets:
+  PRThroughput:
+    type: application
+    platform: macOS
+    sources:
+      - path: PRThroughput
+    info:
+      path: PRThroughput/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: PR Throughput
+        CFBundleIconName: AppIcon
+        CFBundleName: PRThroughput
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSUIElement: true
+        NSHumanReadableCopyright: ""
+        GITHUB_CLIENT_ID: $(GITHUB_CLIENT_ID)
+    entitlements:
+      path: PRThroughput/Resources/PRThroughput.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.prthroughput.PRThroughput
+        PRODUCT_NAME: PRThroughput
+        GENERATE_INFOPLIST_FILE: false
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      configs:
+        Debug:
+          CODE_SIGNING_ALLOWED: false
+          GITHUB_CLIENT_ID: ""
+        Release:
+          GITHUB_CLIENT_ID: ""
+  PRThroughputTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: PRThroughputTests
+    dependencies:
+      - target: PRThroughput
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.prthroughput.PRThroughputTests
+        GENERATE_INFOPLIST_FILE: true
+        CODE_SIGNING_ALLOWED: false
+  PRThroughputLiveE2E:
+    type: tool
+    platform: macOS
+    sources:
+      - path: PRThroughput/Domain
+      - path: PRThroughput/GitHub/GitHubAPI.swift
+      - path: PRThroughput/Services/SyncCoordinator.swift
+      - path: Tools/LiveE2E
+    settings:
+      base:
+        PRODUCT_NAME: PRThroughputLiveE2E
+        CODE_SIGNING_ALLOWED: false
+  PRThroughputUIQA:
+    type: application
+    platform: macOS
+    sources:
+      - path: PRThroughput
+        excludes:
+          - App/PRThroughputApp.swift
+      - path: Tools/UIQA
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.prthroughput.PRThroughputUIQA
+        PRODUCT_NAME: PRThroughputUIQA
+        GENERATE_INFOPLIST_FILE: true
+        CODE_SIGNING_ALLOWED: false
+        INFOPLIST_KEY_CFBundleDisplayName: PR Throughput UI QA
+schemes:
+  PRThroughput:
+    build:
+      targets:
+        PRThroughput: all
+        PRThroughputTests: [test]
+    test:
+      targets:
+        - PRThroughputTests
+  PRThroughputLiveE2E:
+    build:
+      targets:
+        PRThroughputLiveE2E: all
+  PRThroughputUIQA:
+    build:
+      targets:
+        PRThroughputUIQA: all
