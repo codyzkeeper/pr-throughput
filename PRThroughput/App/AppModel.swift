@@ -44,12 +44,26 @@ final class AppModel: ObservableObject {
     init() {
         snapshotStore = try? SnapshotStore()
         let configured = Bundle.main.object(forInfoDictionaryKey: "GITHUB_CLIENT_ID") as? String
-        oauthClientID = UserDefaults.standard.string(forKey: "github.oauthClientID")
-            ?? configured?.replacingOccurrences(of: "$(GITHUB_CLIENT_ID)", with: "")
-            ?? ""
+        oauthClientID = Self.resolveOAuthClientID(
+            saved: UserDefaults.standard.string(forKey: "github.oauthClientID"),
+            configured: configured
+        )
+    }
+
+    nonisolated static func resolveOAuthClientID(saved: String?, configured: String?) -> String {
+        for candidate in [saved, configured] {
+            let trimmed = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !trimmed.isEmpty, trimmed != "$(GITHUB_CLIENT_ID)" { return trimmed }
+        }
+        return ""
     }
 
     var assignedCount: Int { snapshot?.assignedCount ?? 0 }
+
+    var hasBundledOAuthClientID: Bool {
+        let configured = Bundle.main.object(forInfoDictionaryKey: "GITHUB_CLIENT_ID") as? String
+        return !Self.resolveOAuthClientID(saved: nil, configured: configured).isEmpty
+    }
 
     var unacknowledgedItems: [AttentionItem] {
         snapshot?.attentionItems.filter(\.isActive) ?? []
@@ -100,7 +114,8 @@ final class AppModel: ObservableObject {
                 }
             }
             do {
-                let service = OAuthDeviceFlowService(clientID: self.oauthClientID)
+                let clientID = Self.resolveOAuthClientID(saved: self.oauthClientID, configured: nil)
+                let service = OAuthDeviceFlowService(clientID: clientID)
                 let authorization = try await service.begin()
                 try Task.checkCancellation()
                 self.deviceAuthorization = authorization

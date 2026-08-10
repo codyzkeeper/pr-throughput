@@ -27,7 +27,9 @@ struct OnboardingView: View {
                     Text("OAuth App client ID").font(.caption).foregroundStyle(.secondary)
                     TextField("Public client ID", text: $model.oauthClientID)
                         .textFieldStyle(.roundedBorder)
-                    Text("Create a GitHub OAuth App, enable Device Flow, then paste its public client ID. No client secret is used.")
+                    Text(model.hasBundledOAuthClientID
+                         ? "This release includes a public client ID. You may replace it with one from your own Device Flow OAuth App."
+                         : "Create a GitHub OAuth App, enable Device Flow, then paste its public client ID. No client secret is used.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 Button("Sign in with GitHub") { model.signIn() }

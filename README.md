@@ -36,6 +36,8 @@ No client secret is used. GitHub's OAuth `repo` scope is broad because GitHub do
 
 ## Build
 
+Building from source requires Xcode 26 or later and [XcodeGen](https://github.com/yonaskolb/XcodeGen). Install XcodeGen with `brew install xcodegen` if needed.
+
 ```sh
 xcodegen generate
 xcodebuild test -project PRThroughput.xcodeproj -scheme PRThroughput -destination 'platform=macOS,arch=arm64' CODE_SIGNING_ALLOWED=NO

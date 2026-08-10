@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1 — 2026-08-10
+
+- Fixed a configured release opening with GitHub sign-in disabled when an earlier build had saved a blank OAuth client-ID preference.
+- Added regression coverage for bundled configuration, blank saved values, and explicit user overrides.
+- Clarified in-app OAuth guidance when a release already includes a public client ID.
+
 ## 0.1.0 — 2026-08-10
 
 Initial public release.

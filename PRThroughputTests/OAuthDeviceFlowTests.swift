@@ -3,6 +3,29 @@ import XCTest
 @testable import PRThroughput
 
 final class OAuthDeviceFlowTests: XCTestCase {
+    func testOAuthClientIDResolutionFallsBackFromBlankSavedValue() {
+        XCTAssertEqual(
+            AppModel.resolveOAuthClientID(saved: "  \n", configured: "bundled-client"),
+            "bundled-client"
+        )
+        XCTAssertEqual(
+            AppModel.resolveOAuthClientID(saved: nil, configured: " bundled-client "),
+            "bundled-client"
+        )
+        XCTAssertEqual(
+            AppModel.resolveOAuthClientID(saved: nil, configured: "$(GITHUB_CLIENT_ID)"),
+            ""
+        )
+    }
+
+    func testOAuthClientIDResolutionPreservesNonblankUserOverride() {
+        XCTAssertEqual(
+            AppModel.resolveOAuthClientID(saved: " saved-client ", configured: "bundled-client"),
+            "saved-client"
+        )
+        XCTAssertEqual(AppModel.resolveOAuthClientID(saved: " ", configured: " \n"), "")
+    }
+
     override func tearDown() {
         StubURLProtocol.handler = nil
         super.tearDown()
