@@ -96,16 +96,39 @@ actor GitHubAPI {
             return GitHubActionDiscovery(pullRequests: [], searchDisagreementCount: 0)
         }
 
+        let searchResults = try await withThrowingTaskGroup(
+            of: [GitHubPullRequestNode].self,
+            returning: [[GitHubPullRequestNode]].self
+        ) { group in
+            for rule in configuration.enabledRules {
+                group.addTask { [self] in
+                    try await searchPullRequests(query: configuration.searchQuery(for: rule))
+                }
+            }
+            var pages: [[GitHubPullRequestNode]] = []
+            for try await page in group { pages.append(page) }
+            return pages
+        }
         var searchNodes: [String: GitHubPullRequestNode] = [:]
-        for rule in configuration.enabledRules {
-            for node in try await searchPullRequests(query: configuration.searchQuery(for: rule)) {
+        for result in searchResults {
+            for node in result {
                 searchNodes[node.id] = node
             }
         }
         let allIDs = Set(searchNodes.keys).union(candidateIDs)
-        var direct: [GitHubActionPullRequest] = []
-        for chunk in allIDs.sorted().chunked(into: 20) {
-            direct.append(contentsOf: try await directActionPullRequests(ids: chunk, configuration: configuration))
+        let chunks = allIDs.sorted().chunked(into: 20)
+        let direct = try await withThrowingTaskGroup(
+            of: [GitHubActionPullRequest].self,
+            returning: [GitHubActionPullRequest].self
+        ) { group in
+            for chunk in chunks {
+                group.addTask { [self] in
+                    try await directActionPullRequests(ids: chunk, configuration: configuration)
+                }
+            }
+            var pulls: [GitHubActionPullRequest] = []
+            for try await result in group { pulls.append(contentsOf: result) }
+            return pulls
         }
 
         let directIDs = Set(direct.map(\.id))
