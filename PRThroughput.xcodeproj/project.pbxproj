@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		077ACA94AFC694E956500866 /* AppSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EDF3743182CCBFEED15896E /* AppSnapshot.swift */; };
 		0BDC276077AE51AE31E42FA4 /* TimelineEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCCF2510356374F4BE9B07D6 /* TimelineEvent.swift */; };
+		0DEF64500B210DAC01B19C42 /* ActionNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7109EE4FFBEAE0E1C9ADD727 /* ActionNotifications.swift */; };
 		0F3125EFD8A1A5B3581C0EF4 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E90E19EF0A5E52B883701A /* SettingsView.swift */; };
 		10BC19F91C517A5093EC0F77 /* TimelineEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCCF2510356374F4BE9B07D6 /* TimelineEvent.swift */; };
 		16F0EC6940F0A47A271ABE9F /* AppSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EDF3743182CCBFEED15896E /* AppSnapshot.swift */; };
@@ -35,11 +36,13 @@
 		4D0E08A2F796793DEDF838B9 /* StatusItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30B76D46F29B83846595092D /* StatusItemController.swift */; };
 		517EBA7C8DB87BA74F55F3EE /* StatusItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30B76D46F29B83846595092D /* StatusItemController.swift */; };
 		5453A1BCEF18960AF7A58E92 /* CohortMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 913016E8FE1A7EB39077105B /* CohortMetrics.swift */; };
+		59867D81406499086DF3BACC /* ActionNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7109EE4FFBEAE0E1C9ADD727 /* ActionNotifications.swift */; };
 		5E3B75870A61EDE8CA4A29F8 /* WindowActivityMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65490E1B6416CF55C3424B45 /* WindowActivityMetrics.swift */; };
 		642E460B9EE3B729EDB254A4 /* MetricContract.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9546D5DC02495962A8A1FB8C /* MetricContract.swift */; };
 		6599AAAD2E007552DF8D693C /* HandoffResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 974D4CA050F0F2E393CBD430 /* HandoffResolver.swift */; };
 		6759E78F451D9E04BF530A3F /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD39A03A4CCC97F91A6F04FC /* AppModel.swift */; };
 		69A53B1E773C686A14B66647 /* OAuthDeviceFlowService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E45F7CD6DF933919854275CF /* OAuthDeviceFlowService.swift */; };
+		6BF0CEBA7A308ACCFC4E4EC3 /* ActionNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7109EE4FFBEAE0E1C9ADD727 /* ActionNotifications.swift */; };
 		6DFD518B2AA642BC78027DC7 /* SyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D72149D9DFCFB649AAAA0A96 /* SyncCoordinator.swift */; };
 		7479685D6A5C8EB5F4790068 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2B181A51338C21880C485E2F /* Assets.xcassets */; };
 		765E849A23CAAB03F92695D9 /* PRThroughputApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8A4E15606BED0C598A91352 /* PRThroughputApp.swift */; };
@@ -61,6 +64,7 @@
 		B22FBCCD9D4D85EE2032148E /* HandoffMatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDE24E665FE81BA48B1B2990 /* HandoffMatcher.swift */; };
 		B48010A6447CF3491AC228B3 /* ActivitySeriesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88C4ADFF9BF7F67962CA78C4 /* ActivitySeriesTests.swift */; };
 		B7461A378EADA76FADA6C953 /* Handoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0219C85343811615751936EA /* Handoff.swift */; };
+		B7717DB845A0485B730E0540 /* ActionNotificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF50947A34B74324B5016629 /* ActionNotificationTests.swift */; };
 		BBF48B9DB5726D862E78274D /* MenuPopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9F1FDA482BEABCC8BBA0EA9 /* MenuPopoverView.swift */; };
 		C0B7B15F52AE90887CEC5FD0 /* GitHubAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3711658F9A49FC4015BAAEA /* GitHubAPI.swift */; };
 		C4B8E5BAAB3AFC06E912A11D /* WindowActivityMetricsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 349E2393D3CA737E7A6E644B /* WindowActivityMetricsTests.swift */; };
@@ -110,6 +114,7 @@
 		5E319677E1B2D863CD818A61 /* PersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceTests.swift; sourceTree = "<group>"; };
 		5E96C7A9A4B6FA7799C093EE /* PRThroughputLiveE2E */ = {isa = PBXFileReference; includeInIndex = 0; path = PRThroughputLiveE2E; sourceTree = BUILT_PRODUCTS_DIR; };
 		65490E1B6416CF55C3424B45 /* WindowActivityMetrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowActivityMetrics.swift; sourceTree = "<group>"; };
+		7109EE4FFBEAE0E1C9ADD727 /* ActionNotifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionNotifications.swift; sourceTree = "<group>"; };
 		88C4ADFF9BF7F67962CA78C4 /* ActivitySeriesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivitySeriesTests.swift; sourceTree = "<group>"; };
 		8D8D18EF713625A5C07D4F18 /* PRThroughputUIQA.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PRThroughputUIQA.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		8DB61C128194D13060CB6528 /* HandoffMatcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandoffMatcherTests.swift; sourceTree = "<group>"; };
@@ -133,6 +138,7 @@
 		CD39A03A4CCC97F91A6F04FC /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		CDE24E665FE81BA48B1B2990 /* HandoffMatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandoffMatcher.swift; sourceTree = "<group>"; };
 		D72149D9DFCFB649AAAA0A96 /* SyncCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncCoordinator.swift; sourceTree = "<group>"; };
+		DF50947A34B74324B5016629 /* ActionNotificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionNotificationTests.swift; sourceTree = "<group>"; };
 		E45F7CD6DF933919854275CF /* OAuthDeviceFlowService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthDeviceFlowService.swift; sourceTree = "<group>"; };
 		E605B3581BD6EF990948E693 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		FCCF2510356374F4BE9B07D6 /* TimelineEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineEvent.swift; sourceTree = "<group>"; };
@@ -144,6 +150,7 @@
 		1A75D94CA5D7524A79A579C1 /* Domain */ = {
 			isa = PBXGroup;
 			children = (
+				7109EE4FFBEAE0E1C9ADD727 /* ActionNotifications.swift */,
 				3EDF3743182CCBFEED15896E /* AppSnapshot.swift */,
 				913016E8FE1A7EB39077105B /* CohortMetrics.swift */,
 				FEB3922C673E2DB197019300 /* GitHubUser.swift */,
@@ -205,6 +212,7 @@
 		5E7FACB91E1E497ED248A982 /* PRThroughputTests */ = {
 			isa = PBXGroup;
 			children = (
+				DF50947A34B74324B5016629 /* ActionNotificationTests.swift */,
 				88C4ADFF9BF7F67962CA78C4 /* ActivitySeriesTests.swift */,
 				013FB3C8BB4BF8D1D0E3361C /* CohortMetricsTests.swift */,
 				9D5E2FA1BC6EA749D1DBB50E /* GitHubAPITests.swift */,
@@ -432,6 +440,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B7717DB845A0485B730E0540 /* ActionNotificationTests.swift in Sources */,
 				B48010A6447CF3491AC228B3 /* ActivitySeriesTests.swift in Sources */,
 				AE9F5D876B32E11F7C16C7B4 /* CohortMetricsTests.swift in Sources */,
 				2D451FC8CC6D1A911C25224A /* GitHubAPITests.swift in Sources */,
@@ -451,6 +460,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0DEF64500B210DAC01B19C42 /* ActionNotifications.swift in Sources */,
 				9BB70CE730F8505851703F63 /* AppModel.swift in Sources */,
 				9D91F3851868D9537C3D0C9C /* AppSnapshot.swift in Sources */,
 				86B433D4B95DFE11A26F6B76 /* CohortMetrics.swift in Sources */,
@@ -481,6 +491,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				6BF0CEBA7A308ACCFC4E4EC3 /* ActionNotifications.swift in Sources */,
 				077ACA94AFC694E956500866 /* AppSnapshot.swift in Sources */,
 				9CAB4A0E7A3B849CDAAF45A3 /* CohortMetrics.swift in Sources */,
 				C0B7B15F52AE90887CEC5FD0 /* GitHubAPI.swift in Sources */,
@@ -502,6 +513,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				59867D81406499086DF3BACC /* ActionNotifications.swift in Sources */,
 				6759E78F451D9E04BF530A3F /* AppModel.swift in Sources */,
 				16F0EC6940F0A47A271ABE9F /* AppSnapshot.swift in Sources */,
 				5453A1BCEF18960AF7A58E92 /* CohortMetrics.swift in Sources */,
@@ -681,7 +693,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -694,7 +706,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.1;
+				MARKETING_VERSION = 0.2.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -740,7 +752,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -759,7 +771,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.1;
+				MARKETING_VERSION = 0.2.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;

@@ -42,20 +42,13 @@ struct LiveE2E {
             throw LiveE2EError.invariant("assigned pull-request discovery")
         }
 
-        let notificationThreads = try await api.notifications(
-            since: Date().addingTimeInterval(-30 * 24 * 3_600)
-        )
-        for thread in notificationThreads where
-            thread.unread && thread.reason == "mention" && thread.subject.type == "PullRequest" {
-            _ = try await api.mentionContents(thread: thread)
-        }
-
+        let actionConfiguration = try actionConfigurationFromEnvironment()
         let coordinator = SyncCoordinator(api: api)
-        let first = try await coordinator.refresh(previous: nil)
-        try validate(first.snapshot, viewer: viewer)
+        let first = try await coordinator.refresh(previous: nil, configuration: actionConfiguration)
+        try validate(first.snapshot, viewer: viewer, configuration: actionConfiguration)
 
-        let second = try await coordinator.refresh(previous: first.snapshot)
-        try validate(second.snapshot, viewer: viewer)
+        let second = try await coordinator.refresh(previous: first.snapshot, configuration: actionConfiguration)
+        try validate(second.snapshot, viewer: viewer, configuration: actionConfiguration)
         let asOf = Date()
 
         if options.canonicalMetrics {
@@ -97,6 +90,9 @@ struct LiveE2E {
             "reviewDecisionEvents30d": reviewEvents.count,
             "completedReviews30d": metrics.decisions,
             "pendingReviews30d": metrics.pending,
+            "actionPullRequests": second.snapshot.attentionItems.count,
+            "actionLabelFacts": second.snapshot.attentionItems.flatMap(\.applications).count,
+            "actionSearchDisagreements": second.snapshot.metadata.actionSearchDisagreementCount ?? -1,
             "rateRemaining": second.snapshot.metadata.rateState.remaining ?? -1
         ]
         let data = try JSONSerialization.data(withJSONObject: summary, options: [.sortedKeys])
@@ -106,7 +102,8 @@ struct LiveE2E {
 
     private static func validate(
         _ snapshot: AppSnapshot,
-        viewer: GitHubUser
+        viewer: GitHubUser,
+        configuration: ActionNotificationConfiguration
     ) throws {
         let asOf = Date()
         try require(snapshot.viewer == viewer, "viewer identity changed")
@@ -114,10 +111,17 @@ struct LiveE2E {
         try require(Set(snapshot.events.map(\.id)).count == snapshot.events.count, "duplicate timeline events")
         try require(Set(snapshot.handoffs.map(\.id)).count == snapshot.handoffs.count, "duplicate review cycles")
         try require(snapshot.pullRequests.allSatisfy { $0.authorID == viewer.id }, "non-viewer authored PR")
-        try require(Set(snapshot.attentionItems.map(\.id)).count == snapshot.attentionItems.count, "duplicate mention threads")
+        try require(Set(snapshot.attentionItems.map(\.id)).count == snapshot.attentionItems.count, "duplicate action rows")
         try require(snapshot.attentionItems.allSatisfy {
-            $0.isVerifiedDirectMention && $0.url.scheme == "https" && $0.url.host == "github.com"
-        }, "unverified or unsafe direct-mention item")
+            $0.kind == .actionLabels && !$0.applications.isEmpty
+                && $0.url.scheme == "https" && $0.url.host == "github.com"
+        }, "invalid or unsafe action row")
+        let applications = snapshot.attentionItems.flatMap(\.applications)
+        try require(Set(applications.map(\.labelEventID)).count == applications.count, "duplicate label application IDs")
+        try require(applications.allSatisfy { $0.normalizedColorHex != nil }, "invalid action label color")
+        try require(snapshot.metadata.actionConfigurationRevision == configuration.revision, "action configuration revision")
+        try require(snapshot.metadata.lastSuccessfulActionLabelSync != nil, "missing action-label sync timestamp")
+        try require(snapshot.metadata.lastActionLabelError == nil, "action sync reported: \(snapshot.metadata.lastActionLabelError ?? "unknown error")")
         try require(snapshot.metadata.baselineEstablished, "baseline not established")
         try require(snapshot.metadata.lastSuccessfulSync != nil, "missing sync timestamp")
         try require(snapshot.metadata.lastError == nil, "sync reported: \(snapshot.metadata.lastError ?? "unknown error")")
@@ -142,6 +146,23 @@ struct LiveE2E {
                 try require(metrics.decisions == 0, "missing rates with decisions for \(range.rawValue)")
             }
         }
+    }
+
+    private static func actionConfigurationFromEnvironment() throws -> ActionNotificationConfiguration {
+        let environment = ProcessInfo.processInfo.environment
+        let organization = environment["PR_THROUGHPUT_ACTION_ORGANIZATION"] ?? ""
+        let names = [
+            environment["PR_THROUGHPUT_ACTION_LABEL_1"] ?? "",
+            environment["PR_THROUGHPUT_ACTION_LABEL_2"] ?? "",
+            environment["PR_THROUGHPUT_ACTION_LABEL_3"] ?? ""
+        ]
+        guard !organization.isEmpty else { return .blank }
+        let rules = zip(ActionRuleID.allCases, names).map { id, name in
+            ActionRuleConfiguration(id: id, labelName: name, isEnabled: !name.isEmpty)
+        }
+        return try ActionNotificationConfiguration(
+            schemaVersion: 1, organization: organization, rules: rules
+        ).validated()
     }
 
     private static func require(_ condition: @autoclosure () -> Bool, _ message: String) throws {

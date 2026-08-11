@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 enum NotificationLevel: String, Codable, CaseIterable, Sendable {
@@ -11,6 +12,7 @@ enum AttentionKind: String, Codable, Sendable {
     case assigned
     case reviewRequested
     case changesRequested
+    case actionLabels
 }
 
 struct AttentionItem: Codable, Hashable, Identifiable, Sendable {
@@ -28,6 +30,10 @@ struct AttentionItem: Codable, Hashable, Identifiable, Sendable {
     let verificationVersion: Int?
     var seenRevisionID: String?
     var acknowledgedRevisionID: String?
+    let pullRequestID: String?
+    let pullRequestNumber: Int?
+    var actionApplications: [ActionLabelApplication]?
+    var deliveredApplicationRevision: String?
 
     init(
         id: String,
@@ -41,7 +47,11 @@ struct AttentionItem: Codable, Hashable, Identifiable, Sendable {
         revisionID: String? = nil,
         verificationVersion: Int? = nil,
         seenRevisionID: String? = nil,
-        acknowledgedRevisionID: String? = nil
+        acknowledgedRevisionID: String? = nil,
+        pullRequestID: String? = nil,
+        pullRequestNumber: Int? = nil,
+        actionApplications: [ActionLabelApplication]? = nil,
+        deliveredApplicationRevision: String? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -55,6 +65,10 @@ struct AttentionItem: Codable, Hashable, Identifiable, Sendable {
         self.verificationVersion = verificationVersion
         self.seenRevisionID = seenRevisionID
         self.acknowledgedRevisionID = acknowledgedRevisionID
+        self.pullRequestID = pullRequestID
+        self.pullRequestNumber = pullRequestNumber
+        self.actionApplications = actionApplications
+        self.deliveredApplicationRevision = deliveredApplicationRevision
     }
 
     var isVerifiedDirectMention: Bool {
@@ -64,11 +78,13 @@ struct AttentionItem: Codable, Hashable, Identifiable, Sendable {
     }
 
     var isActive: Bool {
+        if kind == .actionLabels { return applications.contains { $0.dismissedAt == nil } }
         guard let revisionID, isVerifiedDirectMention else { return false }
         return acknowledgedRevisionID != revisionID
     }
 
     var isUnseen: Bool {
+        if kind == .actionLabels { return applications.contains(where: \.isUnseen) }
         guard let revisionID, isActive else { return false }
         return seenRevisionID != revisionID
     }
@@ -76,6 +92,93 @@ struct AttentionItem: Codable, Hashable, Identifiable, Sendable {
     var notificationID: String {
         guard let revisionID else { return id }
         return "\(id):\(revisionID)"
+    }
+
+    var applications: [ActionLabelApplication] { actionApplications ?? [] }
+
+    var highestPriorityUnseenApplication: ActionLabelApplication? {
+        applications.filter(\.isUnseen).min {
+            if $0.ruleID.priority != $1.ruleID.priority { return $0.ruleID.priority < $1.ruleID.priority }
+            return $0.appliedAt > $1.appliedAt
+        }
+    }
+
+    var highestPriorityUndeliveredApplication: ActionLabelApplication? {
+        applications.filter { $0.isUnseen && $0.deliveredAt == nil }.min {
+            if $0.ruleID.priority != $1.ruleID.priority { return $0.ruleID.priority < $1.ruleID.priority }
+            return $0.appliedAt > $1.appliedAt
+        }
+    }
+
+    var hasUndeliveredApplication: Bool {
+        highestPriorityUndeliveredApplication != nil
+    }
+
+    func markingUndeliveredApplicationsDelivered(at date: Date) -> AttentionItem {
+        var copy = self
+        var values = applications
+        for index in values.indices where values[index].isUnseen && values[index].deliveredAt == nil {
+            values[index].deliveredAt = date
+        }
+        copy.actionApplications = values
+        return copy
+    }
+
+    var highestPriorityActiveApplication: ActionLabelApplication? {
+        applications.filter { $0.dismissedAt == nil }.min {
+            if $0.ruleID.priority != $1.ruleID.priority { return $0.ruleID.priority < $1.ruleID.priority }
+            return $0.appliedAt > $1.appliedAt
+        }
+    }
+
+    static func action(
+        pullRequestID: String,
+        title: String,
+        repository: String,
+        number: Int,
+        url: URL,
+        applications: [ActionLabelApplication],
+        deliveredApplicationRevision: String? = nil
+    ) -> AttentionItem {
+        let revision = Self.actionRevision(applications)
+        return AttentionItem(
+            id: "action:\(pullRequestID)", kind: .actionLabels, level: .persistent,
+            title: title, repository: repository, url: url,
+            createdAt: applications.map(\.appliedAt).max() ?? .distantPast,
+            revisionID: revision, pullRequestID: pullRequestID,
+            pullRequestNumber: number, actionApplications: applications,
+            deliveredApplicationRevision: deliveredApplicationRevision
+        )
+    }
+
+    static func actionRevision(_ applications: [ActionLabelApplication]) -> String {
+        let data = Data(applications.map(\.labelEventID).sorted().joined(separator: "\0").utf8)
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    func dismissing(revision: String, at date: Date) -> (item: AttentionItem, didMutate: Bool) {
+        guard kind == .actionLabels, revisionID == revision else { return (self, false) }
+        var copy = self
+        var values = applications
+        for index in values.indices where values[index].dismissedAt == nil {
+            values[index].seenAt = values[index].seenAt ?? date
+            values[index].dismissedAt = date
+        }
+        copy.actionApplications = values
+        return (copy, true)
+    }
+
+    func markingSeen(revision: String, at date: Date) -> (item: AttentionItem, didMutate: Bool) {
+        guard kind == .actionLabels, revisionID == revision else { return (self, false) }
+        var copy = self
+        var values = applications
+        var changed = false
+        for index in values.indices where values[index].isUnseen {
+            values[index].seenAt = date
+            changed = true
+        }
+        copy.actionApplications = values
+        return (copy, changed)
     }
 }
 
@@ -181,6 +284,11 @@ struct SyncMetadata: Codable, Equatable, Sendable {
     var baselineEstablished: Bool
     var timelineSchemaVersion: Int?
     var attentionVisibilityVersion: Int?
+    var actionAuthorityVersion: Int?
+    var actionConfigurationRevision: String?
+    var lastSuccessfulActionLabelSync: Date?
+    var lastActionLabelError: String?
+    var actionSearchDisagreementCount: Int?
 
     init(
         lastSuccessfulSync: Date?,
@@ -189,7 +297,12 @@ struct SyncMetadata: Codable, Equatable, Sendable {
         rateState: GitHubRateState,
         baselineEstablished: Bool,
         timelineSchemaVersion: Int? = TimelineEvent.sourceSchemaVersion,
-        attentionVisibilityVersion: Int? = 6
+        attentionVisibilityVersion: Int? = 6,
+        actionAuthorityVersion: Int? = nil,
+        actionConfigurationRevision: String? = nil,
+        lastSuccessfulActionLabelSync: Date? = nil,
+        lastActionLabelError: String? = nil,
+        actionSearchDisagreementCount: Int? = nil
     ) {
         self.lastSuccessfulSync = lastSuccessfulSync
         self.lastNotificationSync = lastNotificationSync
@@ -198,6 +311,11 @@ struct SyncMetadata: Codable, Equatable, Sendable {
         self.baselineEstablished = baselineEstablished
         self.timelineSchemaVersion = timelineSchemaVersion
         self.attentionVisibilityVersion = attentionVisibilityVersion
+        self.actionAuthorityVersion = actionAuthorityVersion
+        self.actionConfigurationRevision = actionConfigurationRevision
+        self.lastSuccessfulActionLabelSync = lastSuccessfulActionLabelSync
+        self.lastActionLabelError = lastActionLabelError
+        self.actionSearchDisagreementCount = actionSearchDisagreementCount
     }
 
     static let empty = SyncMetadata(

@@ -87,6 +87,141 @@ actor GitHubAPI {
         return nodes
     }
 
+    func actionPullRequests(
+        configuration: ActionNotificationConfiguration,
+        previouslyKnownIDs: Set<String>
+    ) async throws -> GitHubActionDiscovery {
+        let configuration = try configuration.validated()
+        guard !configuration.enabledRules.isEmpty else {
+            return GitHubActionDiscovery(pullRequests: [], searchDisagreementCount: 0)
+        }
+
+        var searchNodes: [String: GitHubPullRequestNode] = [:]
+        for rule in configuration.enabledRules {
+            for node in try await searchPullRequests(query: configuration.searchQuery(for: rule)) {
+                searchNodes[node.id] = node
+            }
+        }
+        let allIDs = Set(searchNodes.keys).union(previouslyKnownIDs)
+        var direct: [GitHubActionPullRequest] = []
+        for chunk in allIDs.sorted().chunked(into: 20) {
+            direct.append(contentsOf: try await directActionPullRequests(ids: chunk, configuration: configuration))
+        }
+
+        let directIDs = Set(direct.map(\.id))
+        let disagreement = searchNodes.keys.filter { !directIDs.contains($0) }.count
+            + directIDs.filter { !searchNodes.keys.contains($0) }.count
+        return GitHubActionDiscovery(
+            pullRequests: direct.sorted { ($0.repository, $0.number) < ($1.repository, $1.number) },
+            searchDisagreementCount: disagreement
+        )
+    }
+
+    private func directActionPullRequests(
+        ids: [String],
+        configuration: ActionNotificationConfiguration
+    ) async throws -> [GitHubActionPullRequest] {
+        guard !ids.isEmpty else { return [] }
+        let envelope: ActionNodesEnvelope = try await graphQL(
+            query: Self.actionNodesQuery,
+            variables: ["ids": ids]
+        )
+        var result: [GitHubActionPullRequest] = []
+        for pull in envelope.data.nodes.compactMap({ $0 }) {
+            guard pull.state == "OPEN",
+                  pull.repository.nameWithOwner.split(separator: "/").first.map(String.init)?
+                    .caseInsensitiveCompare(configuration.organization) == .orderedSame,
+                  Self.isSafePullRequestURL(pull.url) else { continue }
+            guard !pull.labels.pageInfo.hasNextPage else {
+                throw GitHubAPIError.incompleteDiscovery(expected: pull.labels.nodes.count + 1, received: pull.labels.nodes.count)
+            }
+
+            let rulesByName = Dictionary(
+                uniqueKeysWithValues: configuration.enabledRules.map { ($0.labelName.lowercased(), $0) }
+            )
+            let current = pull.labels.nodes.compactMap { label -> (ActionRuleConfiguration, ActionLabelNode)? in
+                guard let rule = rulesByName[label.name.lowercased()] else { return nil }
+                return (rule, label)
+            }
+            guard !current.isEmpty else { continue }
+
+            var transitions = pull.timelineItems.nodes
+            var didPaginateTransitions = false
+            var cursor = pull.timelineItems.pageInfo.hasPreviousPage ? pull.timelineItems.pageInfo.startCursor : nil
+            var unresolved = Set(current.map { $0.1.id })
+            unresolved.subtract(transitions.map { $0.label.id })
+            var seenCursors = Set<String>()
+            while !unresolved.isEmpty, let currentCursor = cursor {
+                didPaginateTransitions = true
+                guard seenCursors.insert(currentCursor).inserted else { throw GitHubAPIError.invalidResponse }
+                let page = try await actionTransitionPage(id: pull.id, before: currentCursor)
+                transitions.append(contentsOf: page.nodes)
+                unresolved.subtract(page.nodes.map { $0.label.id })
+                cursor = page.pageInfo.hasPreviousPage ? page.pageInfo.startCursor : nil
+            }
+            guard unresolved.isEmpty else { throw GitHubAPIError.invalidResponse }
+
+            if didPaginateTransitions {
+                let verify: ActionCurrentEnvelope = try await graphQL(
+                    query: Self.actionCurrentQuery,
+                    variables: ["id": pull.id]
+                )
+                guard let currentPull = verify.data.node,
+                      currentPull.updatedAt == pull.updatedAt,
+                      currentPull.state == pull.state,
+                      currentPull.repository.nameWithOwner == pull.repository.nameWithOwner,
+                      !currentPull.labels.pageInfo.hasNextPage,
+                      Set(currentPull.labels.nodes.map { "\($0.id)\0\($0.name)\0\($0.color)" })
+                        == Set(pull.labels.nodes.map { "\($0.id)\0\($0.name)\0\($0.color)" }) else {
+                    throw GitHubAPIError.invalidResponse
+                }
+            }
+
+            var applications: [ActionLabelApplication] = []
+            for (rule, label) in current {
+                let latest = transitions
+                    .filter { $0.label.id == label.id }
+                    .max { $0.createdAt < $1.createdAt }
+                guard let latest, latest.typeName == "LabeledEvent",
+                      label.color.range(of: #"^[0-9A-Fa-f]{6}$"#, options: .regularExpression) != nil else {
+                    throw GitHubAPIError.invalidResponse
+                }
+                applications.append(ActionLabelApplication(
+                    pullRequestID: pull.id,
+                    ruleID: rule.id,
+                    labelID: label.id,
+                    labelEventID: latest.id,
+                    labelName: label.name,
+                    colorHex: label.color.uppercased(),
+                    appliedAt: latest.createdAt,
+                    seenAt: nil,
+                    dismissedAt: nil
+                ))
+            }
+            result.append(GitHubActionPullRequest(
+                id: pull.id, number: pull.number, title: pull.title, url: pull.url,
+                repository: pull.repository.nameWithOwner, updatedAt: pull.updatedAt,
+                applications: applications
+            ))
+        }
+        return result
+    }
+
+    private func actionTransitionPage(id: String, before: String) async throws -> ActionTimelineConnection {
+        let envelope: ActionTimelineEnvelope = try await graphQL(
+            query: Self.actionTimelineQuery,
+            variables: ["id": id, "before": before]
+        )
+        guard let node = envelope.data.node else { throw GitHubAPIError.invalidResponse }
+        return node.timelineItems
+    }
+
+    private static func isSafePullRequestURL(_ url: URL) -> Bool {
+        url.scheme == "https" && url.host?.lowercased() == "github.com"
+            && url.user == nil && url.password == nil
+            && url.path.range(of: #"^/[^/]+/[^/]+/pull/[0-9]+/?$"#, options: .regularExpression) != nil
+    }
+
     func timeline(pullRequestID: String) async throws -> [TimelineEvent] {
         var cursor: String?
         var seenCursors = Set<String>()
@@ -434,6 +569,61 @@ actor GitHubAPI {
       }
     }
     """#
+
+    private static let actionNodesQuery = #"""
+    query ActionPullRequests($ids: [ID!]!) {
+      nodes(ids: $ids) {
+        ... on PullRequest {
+          id number title url updatedAt state isDraft
+          repository { nameWithOwner }
+          labels(first: 100) {
+            pageInfo { hasNextPage endCursor hasPreviousPage startCursor }
+            nodes { id name color }
+          }
+          timelineItems(last: 100, itemTypes: [LABELED_EVENT, UNLABELED_EVENT]) {
+            pageInfo { hasNextPage endCursor hasPreviousPage startCursor }
+            nodes {
+              __typename
+              ... on LabeledEvent { id createdAt label { id name color } }
+              ... on UnlabeledEvent { id createdAt label { id name color } }
+            }
+          }
+        }
+      }
+    }
+    """#
+
+    private static let actionTimelineQuery = #"""
+    query ActionPullRequestTimeline($id: ID!, $before: String!) {
+      node(id: $id) {
+        ... on PullRequest {
+          timelineItems(last: 100, before: $before, itemTypes: [LABELED_EVENT, UNLABELED_EVENT]) {
+            pageInfo { hasNextPage endCursor hasPreviousPage startCursor }
+            nodes {
+              __typename
+              ... on LabeledEvent { id createdAt label { id name color } }
+              ... on UnlabeledEvent { id createdAt label { id name color } }
+            }
+          }
+        }
+      }
+    }
+    """#
+
+    private static let actionCurrentQuery = #"""
+    query ActionPullRequestCurrent($id: ID!) {
+      node(id: $id) {
+        ... on PullRequest {
+          updatedAt state
+          repository { nameWithOwner }
+          labels(first: 100) {
+            pageInfo { hasNextPage endCursor hasPreviousPage startCursor }
+            nodes { id name color }
+          }
+        }
+      }
+    }
+    """#
 }
 
 private struct GraphQLErrors: Decodable { struct Item: Decodable { let message: String }; let errors: [Item] }
@@ -491,6 +681,94 @@ struct RecentPullRequestUpdate: Sendable {
 }
 
 private struct PageInfo: Decodable { let hasNextPage: Bool; let endCursor: String? }
+
+struct GitHubActionDiscovery: Sendable {
+    let pullRequests: [GitHubActionPullRequest]
+    let searchDisagreementCount: Int
+}
+
+struct GitHubActionPullRequest: Sendable {
+    let id: String
+    let number: Int
+    let title: String
+    let url: URL
+    let repository: String
+    let updatedAt: Date
+    let applications: [ActionLabelApplication]
+}
+
+private struct ActionNodesEnvelope: Decodable {
+    let data: Body
+    struct Body: Decodable { let nodes: [ActionPullRequestNode?] }
+}
+
+private struct ActionTimelineEnvelope: Decodable {
+    let data: Body
+    struct Body: Decodable { let node: Node? }
+    struct Node: Decodable { let timelineItems: ActionTimelineConnection }
+}
+
+private struct ActionCurrentEnvelope: Decodable {
+    let data: Body
+    struct Body: Decodable { let node: Node? }
+    struct Node: Decodable {
+        let updatedAt: Date
+        let state: String
+        let repository: GitHubPullRequestNode.Repository
+        let labels: ActionLabelConnection
+    }
+}
+
+private struct ActionPullRequestNode: Decodable {
+    let id: String
+    let number: Int
+    let title: String
+    let url: URL
+    let updatedAt: Date
+    let state: String
+    let isDraft: Bool
+    let repository: GitHubPullRequestNode.Repository
+    let labels: ActionLabelConnection
+    let timelineItems: ActionTimelineConnection
+}
+
+private struct ActionLabelConnection: Decodable {
+    let pageInfo: ActionPageInfo
+    let nodes: [ActionLabelNode]
+}
+
+private struct ActionTimelineConnection: Decodable {
+    let pageInfo: ActionPageInfo
+    let nodes: [ActionLabelTransition]
+}
+
+private struct ActionPageInfo: Decodable {
+    let hasNextPage: Bool
+    let endCursor: String?
+    let hasPreviousPage: Bool
+    let startCursor: String?
+}
+
+private struct ActionLabelNode: Decodable {
+    let id: String
+    let name: String
+    let color: String
+}
+
+private struct ActionLabelTransition: Decodable {
+    let typeName: String
+    let id: String
+    let createdAt: Date
+    let label: ActionLabelNode
+    enum CodingKeys: String, CodingKey { case typeName = "__typename", id, createdAt, label }
+}
+
+private extension Array {
+    func chunked(into size: Int) -> [[Element]] {
+        guard size > 0 else { return [] }
+        return stride(from: 0, to: count, by: size).map { Array(self[$0..<Swift.min($0 + size, count)]) }
+    }
+}
 
 struct GitHubActor: Decodable, Sendable {
     let typeName: String

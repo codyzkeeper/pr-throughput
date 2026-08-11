@@ -14,7 +14,10 @@ actor SyncCoordinator {
         self.api = api
     }
 
-    func refresh(previous: AppSnapshot?) async throws -> SyncResult {
+    func refresh(
+        previous: AppSnapshot?,
+        configuration: ActionNotificationConfiguration = .load()
+    ) async throws -> SyncResult {
         let now = Date()
         let viewer = try await api.viewer()
         let since = now.addingTimeInterval(-30 * 24 * 3_600)
@@ -48,71 +51,51 @@ actor SyncCoordinator {
         let resolvedHandoffs = HandoffResolver.resolve(handoffs: rawHandoffs, events: allEvents)
         let newEvents = Self.timelineNotificationDelta(events: allEvents, previous: previous)
 
-        var attention = previous?.attentionItems ?? []
         var transient: [TransientEvent] = []
         if previous?.metadata.baselineEstablished == true {
             let generated = timelineNotifications(events: newEvents, pulls: pulls, viewerID: viewer.id)
             transient.append(contentsOf: generated.transient)
         }
 
-        // Full sync is the authoritative rolling-window reconciliation. Unlike the
-        // frequent incremental poll, it must see read/nonqualifying threads too so
-        // stale attention cannot survive after the user handles it on GitHub.
-        let notificationSince = since
-        var notificationSyncAt = previous?.metadata.lastNotificationSync
-        var notificationError: Error?
-        do {
-            let threads = try await api.notifications(since: notificationSince)
-            var verifiedItems: [AttentionItem] = []
-            var failedIDs = Set<String>()
-            for thread in threads {
-                do {
-                    guard let item = try await attentionItem(from: thread, viewer: viewer) else { continue }
-                    verifiedItems.append(item)
-                } catch GitHubAPIError.unauthorized {
-                    throw GitHubAPIError.unauthorized
-                } catch {
-                    failedIDs.insert("thread:\(thread.id)")
-                    notificationError = notificationError ?? error
-                }
-            }
-            let verifiedIDs = Set(verifiedItems.map(\.id))
-            attention = attention.filter {
-                !$0.isActive || verifiedIDs.contains($0.id) || failedIDs.contains($0.id)
-            }
-            attention.append(contentsOf: verifiedItems)
-            if failedIDs.isEmpty { notificationSyncAt = now }
-        } catch GitHubAPIError.unauthorized {
-            throw GitHubAPIError.unauthorized
-        } catch {
-            // Keep the old cursor so a direct mention is never skipped merely
-            // because one verification request failed during this full refresh.
-            notificationError = error
-        }
-        attention = Self.normalizeAttention(attention, now: now)
-
         let metadata = SyncMetadata(
             lastSuccessfulSync: now,
-            lastNotificationSync: notificationSyncAt,
-            lastError: notificationError?.localizedDescription,
+            lastNotificationSync: nil,
+            lastError: nil,
             rateState: await api.rateState,
             baselineEstablished: true,
-            timelineSchemaVersion: TimelineEvent.sourceSchemaVersion
+            timelineSchemaVersion: TimelineEvent.sourceSchemaVersion,
+            attentionVisibilityVersion: previous?.metadata.attentionVisibilityVersion ?? 6,
+            actionAuthorityVersion: 1,
+            actionConfigurationRevision: previous?.metadata.actionConfigurationRevision,
+            lastSuccessfulActionLabelSync: previous?.metadata.lastSuccessfulActionLabelSync,
+            lastActionLabelError: previous?.metadata.lastActionLabelError,
+            actionSearchDisagreementCount: previous?.metadata.actionSearchDisagreementCount
         )
-        let snapshot = AppSnapshot(
+        var snapshot = AppSnapshot(
             viewer: viewer,
             pullRequests: pulls,
             events: Dictionary(allEvents.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }).values.sorted { $0.at < $1.at },
             handoffs: resolvedHandoffs,
             assignedPullRequestIDs: Set(assignedNodes.filter { !$0.isDraft }.map(\.id)),
-            attentionItems: attention,
+            attentionItems: [],
             metadata: metadata
         )
-        try SnapshotReconciler.requireValid(snapshot, asOf: now)
+        do {
+            try await applyActionAuthority(to: &snapshot, previous: previous, configuration: configuration, now: now)
+        } catch GitHubAPIError.unauthorized {
+            throw GitHubAPIError.unauthorized
+        } catch {
+            preserveActionAuthority(on: &snapshot, previous: previous, configuration: configuration, error: error)
+        }
+        try SnapshotReconciler.requireValid(snapshot, asOf: now, actionConfiguration: configuration)
         return SyncResult(snapshot: snapshot, transientEvents: transient)
     }
 
-    func refreshAssigned(previous: AppSnapshot, now: Date = Date()) async throws -> SyncResult {
+    func refreshAssigned(
+        previous: AppSnapshot,
+        now: Date = Date(),
+        configuration: ActionNotificationConfiguration = .load()
+    ) async throws -> SyncResult {
         let nodes = try await api.searchPullRequests(query: "is:pr is:open assignee:\(previous.viewer.login) draft:false")
         let assignedIDs = Set(nodes.filter { !$0.isDraft }.map(\.id))
         let authoredIDs = Set(previous.pullRequests.lazy.filter { $0.authorID == previous.viewer.id }.map(\.id))
@@ -176,7 +159,6 @@ actor SyncCoordinator {
             priorityTimelineWatchUntil.removeValue(forKey: id)
         }
         let newEvents = Self.timelineNotificationDelta(events: allEvents, previous: previous)
-        let attention = previous.attentionItems
         var transient: [TransientEvent] = []
         if previous.metadata.baselineEstablished {
             let generated = timelineNotifications(
@@ -216,10 +198,16 @@ actor SyncCoordinator {
         updated.assignedPullRequestIDs = assignedIDs
         updated.events = allEvents
         updated.handoffs = handoffs
-        updated.attentionItems = attention
         updated.metadata.lastError = timelineError?.localizedDescription
         updated.metadata.rateState = await api.rateState
-        try SnapshotReconciler.requireValid(updated, asOf: now)
+        do {
+            try await applyActionAuthority(to: &updated, previous: previous, configuration: configuration, now: now)
+        } catch GitHubAPIError.unauthorized {
+            throw GitHubAPIError.unauthorized
+        } catch {
+            preserveActionAuthority(on: &updated, previous: previous, configuration: configuration, error: error)
+        }
+        try SnapshotReconciler.requireValid(updated, asOf: now, actionConfiguration: configuration)
         return SyncResult(snapshot: updated, transientEvents: transient)
     }
 
@@ -317,6 +305,79 @@ actor SyncCoordinator {
             return newest
         }.sorted {
             $0.createdAt == $1.createdAt ? $0.id < $1.id : $0.createdAt > $1.createdAt
+        }
+    }
+
+    private func applyActionAuthority(
+        to snapshot: inout AppSnapshot,
+        previous: AppSnapshot?,
+        configuration: ActionNotificationConfiguration,
+        now: Date
+    ) async throws {
+        let revision = configuration.revision
+        snapshot.metadata.actionAuthorityVersion = 1
+        snapshot.metadata.actionConfigurationRevision = revision
+        snapshot.metadata.lastNotificationSync = nil
+
+        guard configuration.isConfigured else {
+            snapshot.attentionItems = []
+            snapshot.metadata.lastSuccessfulActionLabelSync = now
+            snapshot.metadata.lastActionLabelError = nil
+            snapshot.metadata.actionSearchDisagreementCount = 0
+            return
+        }
+
+        let priorItems = previous?.metadata.actionConfigurationRevision == revision
+            ? previous?.attentionItems.filter { $0.kind == .actionLabels } ?? []
+            : []
+        let knownIDs = Set(priorItems.compactMap(\.pullRequestID))
+        let discovery = try await api.actionPullRequests(
+            configuration: configuration,
+            previouslyKnownIDs: knownIDs
+        )
+        let priorByPull = Dictionary(
+            uniqueKeysWithValues: priorItems.compactMap { item in item.pullRequestID.map { ($0, item) } }
+        )
+        snapshot.attentionItems = discovery.pullRequests.map { pull in
+            let old = priorByPull[pull.id]
+            let applications = ActionAttentionMerger.mergePresentation(
+                incoming: pull.applications,
+                previous: old?.applications ?? []
+            )
+            return AttentionItem.action(
+                pullRequestID: pull.id,
+                title: pull.title,
+                repository: pull.repository,
+                number: pull.number,
+                url: pull.url,
+                applications: applications,
+                deliveredApplicationRevision: nil
+            )
+        }
+        snapshot.metadata.lastSuccessfulActionLabelSync = now
+        snapshot.metadata.lastActionLabelError = nil
+        snapshot.metadata.actionSearchDisagreementCount = discovery.searchDisagreementCount
+        snapshot.metadata.rateState = await api.rateState
+    }
+
+    private func preserveActionAuthority(
+        on snapshot: inout AppSnapshot,
+        previous: AppSnapshot?,
+        configuration: ActionNotificationConfiguration,
+        error: Error
+    ) {
+        let revision = configuration.revision
+        snapshot.metadata.actionAuthorityVersion = 1
+        snapshot.metadata.actionConfigurationRevision = revision
+        snapshot.metadata.lastActionLabelError = error.localizedDescription
+        if previous?.metadata.actionConfigurationRevision == revision {
+            snapshot.attentionItems = previous?.attentionItems.filter { $0.kind == .actionLabels } ?? []
+            snapshot.metadata.lastSuccessfulActionLabelSync = previous?.metadata.lastSuccessfulActionLabelSync
+            snapshot.metadata.actionSearchDisagreementCount = previous?.metadata.actionSearchDisagreementCount
+        } else {
+            snapshot.attentionItems = []
+            snapshot.metadata.lastSuccessfulActionLabelSync = nil
+            snapshot.metadata.actionSearchDisagreementCount = nil
         }
     }
 

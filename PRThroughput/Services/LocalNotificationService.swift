@@ -11,18 +11,57 @@ final class LocalNotificationService {
         center.delegate = delegate
     }
 
-    func requestAuthorization() async {
-        _ = try? await center.requestAuthorization(options: [.alert, .sound])
+    func requestAuthorizationIfNeeded() async {
+        let settings = await center.notificationSettings()
+        guard settings.authorizationStatus == .notDetermined else { return }
+        _ = try? await center.requestAuthorization(options: [.alert])
     }
 
-    func deliver(_ item: AttentionItem) async {
-        guard item.isVerifiedDirectMention, item.isUnseen, NotificationPreferences.directMentionsEnabled else { return }
+    func authorizationStatusDescription() async -> String {
+        switch await center.notificationSettings().authorizationStatus {
+        case .notDetermined: "Not requested"
+        case .denied: "Denied — feed and menu-bar dot remain active"
+        case .authorized: "Allowed"
+        case .provisional: "Provisionally allowed"
+        case .ephemeral: "Allowed for this session"
+        @unknown default: "Unknown"
+        }
+    }
+
+    @discardableResult
+    func deliver(_ item: AttentionItem, accountID: String) async -> Bool {
+        guard item.kind == .actionLabels, item.isUnseen,
+              let application = item.highestPriorityUndeliveredApplication,
+              let pullRequestID = item.pullRequestID else { return false }
+        let content = UNMutableNotificationContent()
+        content.title = application.labelName
+        content.subtitle = item.repository
+        content.body = item.title
+        content.userInfo = ["url": item.url.absoluteString]
+        content.threadIdentifier = item.repository
+        content.sound = nil
+        content.interruptionLevel = .passive
+        do {
+            try await center.add(UNNotificationRequest(
+                identifier: ActionNotificationIdentifier.value(accountID: accountID, pullRequestID: pullRequestID),
+                content: content,
+                trigger: nil
+            ))
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    // Retained, but intentionally unused. Loud mention behavior requires a future
+    // product decision and the GitHub notifications OAuth scope before reactivation.
+    func deliverLegacyLoudMention(_ item: AttentionItem) async {
+        guard item.isVerifiedDirectMention, item.isUnseen else { return }
         let content = UNMutableNotificationContent()
         content.title = "You were mentioned"
         content.subtitle = item.repository
         content.body = item.title
         content.userInfo = ["url": item.url.absoluteString]
-        content.threadIdentifier = item.repository
         content.sound = .default
         content.interruptionLevel = .timeSensitive
         NSApplication.shared.requestUserAttention(.criticalRequest)
@@ -56,13 +95,5 @@ private final class NotificationCenterDelegate: NSObject, UNUserNotificationCent
         guard let value = response.notification.request.content.userInfo["url"] as? String,
               let url = URL(string: value) else { return }
         _ = await MainActor.run { NSWorkspace.shared.open(url) }
-    }
-}
-
-enum NotificationPreferences {
-    static var directMentionsEnabled: Bool {
-        let key = "notification.mention.enabled"
-        if UserDefaults.standard.object(forKey: key) == nil { return true }
-        return UserDefaults.standard.bool(forKey: key)
     }
 }
