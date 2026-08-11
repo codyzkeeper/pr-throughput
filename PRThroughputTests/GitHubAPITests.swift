@@ -439,6 +439,46 @@ final class GitHubAPITests: XCTestCase {
         XCTAssertEqual(result.searchDisagreementCount, 1)
     }
 
+    func testKnownCurrentLabelDoesNotRepaginateOldTransitions() async throws {
+        var requestCount = 0
+        StubURLProtocol.handler = { request in
+            requestCount += 1
+            let payload: String
+            switch requestCount {
+            case 1:
+                payload = #"{"data":{"search":{"issueCount":0,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}"#
+            case 2:
+                payload = #"{"data":{"nodes":[{"id":"PR_1","number":1,"title":"Test","url":"https://github.com/Org/repo/pull/1","updatedAt":"2026-08-11T00:00:00Z","state":"OPEN","isDraft":false,"repository":{"nameWithOwner":"Org/repo"},"labels":{"pageInfo":{"hasNextPage":false,"endCursor":null,"hasPreviousPage":false,"startCursor":null},"nodes":[{"id":"LABEL_1","name":"action needed","color":"B60205"}]},"timelineItems":{"pageInfo":{"hasNextPage":false,"endCursor":null,"hasPreviousPage":true,"startCursor":"older"},"nodes":[]}}]}}"#
+            default:
+                XCTFail("Known applications should avoid older transition pagination")
+                payload = #"{"data":{"node":{"timelineItems":{"pageInfo":{"hasNextPage":false,"endCursor":null,"hasPreviousPage":false,"startCursor":null},"nodes":[]}}}}"#
+            }
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(payload.utf8))
+        }
+        let appliedAt = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-01T00:00:00Z"))
+        let known = ActionLabelApplication(
+            pullRequestID: "PR_1",
+            ruleID: .decide,
+            labelID: "LABEL_1",
+            labelEventID: "EVENT_1",
+            labelName: "action needed",
+            colorHex: "B60205",
+            appliedAt: appliedAt,
+            seenAt: nil,
+            dismissedAt: nil
+        )
+        let api = GitHubAPI(token: "test", session: stubSession())
+
+        let result = try await api.actionPullRequests(
+            configuration: actionConfiguration(),
+            candidateIDs: ["PR_1"],
+            knownApplications: ["PR_1": ["LABEL_1": known]]
+        )
+
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertEqual(result.pullRequests.first?.applications.first?.labelEventID, "EVENT_1")
+    }
+
     private func actionConfiguration() -> ActionNotificationConfiguration {
         ActionNotificationConfiguration(
             schemaVersion: ActionNotificationConfiguration.schemaVersion,

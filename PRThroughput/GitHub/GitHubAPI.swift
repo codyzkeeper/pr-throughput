@@ -89,7 +89,8 @@ actor GitHubAPI {
 
     func actionPullRequests(
         configuration: ActionNotificationConfiguration,
-        candidateIDs: Set<String>
+        candidateIDs: Set<String>,
+        knownApplications: [String: [String: ActionLabelApplication]] = [:]
     ) async throws -> GitHubActionDiscovery {
         let configuration = try configuration.validated()
         guard !configuration.enabledRules.isEmpty else {
@@ -123,7 +124,11 @@ actor GitHubAPI {
         ) { group in
             for chunk in chunks {
                 group.addTask { [self] in
-                    try await directActionPullRequests(ids: chunk, configuration: configuration)
+                    try await directActionPullRequests(
+                        ids: chunk,
+                        configuration: configuration,
+                        knownApplications: knownApplications
+                    )
                 }
             }
             var pulls: [GitHubActionPullRequest] = []
@@ -142,7 +147,8 @@ actor GitHubAPI {
 
     private func directActionPullRequests(
         ids: [String],
-        configuration: ActionNotificationConfiguration
+        configuration: ActionNotificationConfiguration,
+        knownApplications: [String: [String: ActionLabelApplication]]
     ) async throws -> [GitHubActionPullRequest] {
         guard !ids.isEmpty else { return [] }
         let envelope: ActionNodesEnvelope = try await graphQL(
@@ -171,8 +177,31 @@ actor GitHubAPI {
             var transitions = pull.timelineItems.nodes
             var didPaginateTransitions = false
             var cursor = pull.timelineItems.pageInfo.hasPreviousPage ? pull.timelineItems.pageInfo.startCursor : nil
-            var unresolved = Set(current.map { $0.1.id })
-            unresolved.subtract(transitions.map { $0.label.id })
+            let knownByLabel = knownApplications[pull.id] ?? [:]
+            var unresolved = Set<String>()
+            for (rule, label) in current {
+                let latest = transitions
+                    .filter { $0.label.id == label.id }
+                    .max { $0.createdAt < $1.createdAt }
+                if let latest {
+                    guard latest.typeName == "LabeledEvent" else {
+                        // The direct label collection and the recent transition tail
+                        // disagree, so preserve the last verified state and retry.
+                        throw GitHubAPIError.invalidResponse
+                    }
+                    continue
+                }
+                guard let known = knownByLabel[label.id],
+                      known.ruleID == rule.id,
+                      known.labelName.caseInsensitiveCompare(label.name) == .orderedSame,
+                      known.normalizedColorHex == label.color.uppercased() else {
+                    unresolved.insert(label.id)
+                    continue
+                }
+                // A remove/reapply would produce a recent transition. If no event for
+                // this label is in the tail, the previously verified application is
+                // still current and older pagination is unnecessary.
+            }
             var seenCursors = Set<String>()
             while !unresolved.isEmpty, let currentCursor = cursor {
                 didPaginateTransitions = true
@@ -205,8 +234,28 @@ actor GitHubAPI {
                 let latest = transitions
                     .filter { $0.label.id == label.id }
                     .max { $0.createdAt < $1.createdAt }
-                guard let latest, latest.typeName == "LabeledEvent",
-                      label.color.range(of: #"^[0-9A-Fa-f]{6}$"#, options: .regularExpression) != nil else {
+                guard label.color.range(of: #"^[0-9A-Fa-f]{6}$"#, options: .regularExpression) != nil else {
+                    throw GitHubAPIError.invalidResponse
+                }
+                if latest == nil,
+                   let known = knownByLabel[label.id],
+                   known.ruleID == rule.id,
+                   known.labelName.caseInsensitiveCompare(label.name) == .orderedSame,
+                   known.normalizedColorHex == label.color.uppercased() {
+                    applications.append(ActionLabelApplication(
+                        pullRequestID: pull.id,
+                        ruleID: rule.id,
+                        labelID: label.id,
+                        labelEventID: known.labelEventID,
+                        labelName: label.name,
+                        colorHex: label.color.uppercased(),
+                        appliedAt: known.appliedAt,
+                        seenAt: nil,
+                        dismissedAt: nil
+                    ))
+                    continue
+                }
+                guard let latest, latest.typeName == "LabeledEvent" else {
                     throw GitHubAPIError.invalidResponse
                 }
                 applications.append(ActionLabelApplication(

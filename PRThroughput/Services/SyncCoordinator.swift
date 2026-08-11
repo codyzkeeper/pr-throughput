@@ -335,9 +335,19 @@ actor SyncCoordinator {
         // hot set so recently active automation PRs update on the 15-second lane
         // without crawling every open PR in the organization.
         let candidateIDs = Self.actionCandidateIDs(snapshot: snapshot, priorItems: priorItems)
+        let knownApplications = Dictionary(
+            uniqueKeysWithValues: priorItems.compactMap { item -> (String, [String: ActionLabelApplication])? in
+                guard let pullRequestID = item.pullRequestID else { return nil }
+                return (
+                    pullRequestID,
+                    Dictionary(item.applications.map { ($0.labelID, $0) }, uniquingKeysWith: { first, _ in first })
+                )
+            }
+        )
         let discovery = try await api.actionPullRequests(
             configuration: configuration,
-            candidateIDs: candidateIDs
+            candidateIDs: candidateIDs,
+            knownApplications: knownApplications
         )
         let priorByPull = Dictionary(
             uniqueKeysWithValues: priorItems.compactMap { item in item.pullRequestID.map { ($0, item) } }
