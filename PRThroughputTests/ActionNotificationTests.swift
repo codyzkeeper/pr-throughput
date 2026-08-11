@@ -250,6 +250,62 @@ final class ActionNotificationTests: XCTestCase {
         XCTAssertNil(result.snapshot.metadata.lastActionLabelError)
     }
 
+    func testAssignedRefreshCanPreserveIndependentActionAuthority() async throws {
+        let configuration = configured()
+        var previous = emptySnapshot(actionItems: [actionItem()])
+        previous.metadata.actionAuthorityVersion = 1
+        previous.metadata.actionConfigurationRevision = configuration.revision
+        previous.metadata.lastSuccessfulActionLabelSync = now
+        var requestCount = 0
+        StubURLProtocol.handler = { request in
+            requestCount += 1
+            return Self.graphQLResponse(
+                request,
+                #"{"data":{"search":{"issueCount":0,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}"#
+            )
+        }
+        let coordinator = SyncCoordinator(api: GitHubAPI(token: "test", session: stubSession()))
+
+        let result = try await coordinator.refreshAssigned(
+            previous: previous,
+            now: now.addingTimeInterval(15),
+            configuration: configuration,
+            includeActionAuthority: false
+        )
+
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(result.snapshot.attentionItems.map(\.id), ["action:PR_1"])
+        XCTAssertEqual(result.snapshot.metadata.lastSuccessfulActionLabelSync, now)
+    }
+
+    func testIndependentActionRefreshRemovesStaleLabelFacts() async throws {
+        let configuration = configured()
+        var previous = emptySnapshot(actionItems: [actionItem()])
+        previous.metadata.actionAuthorityVersion = 1
+        previous.metadata.actionConfigurationRevision = configuration.revision
+        previous.metadata.lastSuccessfulActionLabelSync = now.addingTimeInterval(-60)
+        var requestCount = 0
+        StubURLProtocol.handler = { request in
+            requestCount += 1
+            let payload = requestCount == 1
+                ? #"{"data":{"search":{"issueCount":0,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}"#
+                : #"{"data":{"nodes":[{"id":"PR_1","number":1,"title":"PR","url":"https://github.com/Org/repo/pull/1","updatedAt":"2027-01-15T08:00:00Z","state":"OPEN","isDraft":false,"repository":{"nameWithOwner":"Org/repo"},"labels":{"pageInfo":{"hasNextPage":false,"endCursor":null,"hasPreviousPage":false,"startCursor":null},"nodes":[]},"timelineItems":{"pageInfo":{"hasNextPage":false,"endCursor":null,"hasPreviousPage":false,"startCursor":null},"nodes":[]}}]}}"#
+            return Self.graphQLResponse(request, payload)
+        }
+        let coordinator = SyncCoordinator(api: GitHubAPI(token: "test", session: stubSession()))
+        let refreshedAt = now.addingTimeInterval(15)
+
+        let result = try await coordinator.refreshActions(
+            previous: previous,
+            configuration: configuration,
+            now: refreshedAt
+        )
+
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertTrue(result.attentionItems.isEmpty)
+        XCTAssertEqual(result.metadata.lastSuccessfulActionLabelSync, refreshedAt)
+    }
+
     private func application(
         rule: ActionRuleID,
         event: String,

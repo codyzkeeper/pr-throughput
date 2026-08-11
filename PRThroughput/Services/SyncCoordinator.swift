@@ -16,7 +16,8 @@ actor SyncCoordinator {
 
     func refresh(
         previous: AppSnapshot?,
-        configuration: ActionNotificationConfiguration = .load()
+        configuration: ActionNotificationConfiguration = .load(),
+        includeActionAuthority: Bool = true
     ) async throws -> SyncResult {
         let now = Date()
         let viewer = try await api.viewer()
@@ -77,15 +78,17 @@ actor SyncCoordinator {
             events: Dictionary(allEvents.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }).values.sorted { $0.at < $1.at },
             handoffs: resolvedHandoffs,
             assignedPullRequestIDs: Set(assignedNodes.filter { !$0.isDraft }.map(\.id)),
-            attentionItems: [],
+            attentionItems: previous?.attentionItems.filter { $0.kind == .actionLabels } ?? [],
             metadata: metadata
         )
-        do {
-            try await applyActionAuthority(to: &snapshot, previous: previous, configuration: configuration, now: now)
-        } catch GitHubAPIError.unauthorized {
-            throw GitHubAPIError.unauthorized
-        } catch {
-            preserveActionAuthority(on: &snapshot, previous: previous, configuration: configuration, error: error)
+        if includeActionAuthority {
+            do {
+                try await applyActionAuthority(to: &snapshot, previous: previous, configuration: configuration, now: now)
+            } catch GitHubAPIError.unauthorized {
+                throw GitHubAPIError.unauthorized
+            } catch {
+                preserveActionAuthority(on: &snapshot, previous: previous, configuration: configuration, error: error)
+            }
         }
         try SnapshotReconciler.requireValid(snapshot, asOf: now, actionConfiguration: configuration)
         return SyncResult(snapshot: snapshot, transientEvents: transient)
@@ -94,7 +97,8 @@ actor SyncCoordinator {
     func refreshAssigned(
         previous: AppSnapshot,
         now: Date = Date(),
-        configuration: ActionNotificationConfiguration = .load()
+        configuration: ActionNotificationConfiguration = .load(),
+        includeActionAuthority: Bool = true
     ) async throws -> SyncResult {
         let nodes = try await api.searchPullRequests(query: "is:pr is:open assignee:\(previous.viewer.login) draft:false")
         let assignedIDs = Set(nodes.filter { !$0.isDraft }.map(\.id))
@@ -200,6 +204,25 @@ actor SyncCoordinator {
         updated.handoffs = handoffs
         updated.metadata.lastError = timelineError?.localizedDescription
         updated.metadata.rateState = await api.rateState
+        if includeActionAuthority {
+            do {
+                try await applyActionAuthority(to: &updated, previous: previous, configuration: configuration, now: now)
+            } catch GitHubAPIError.unauthorized {
+                throw GitHubAPIError.unauthorized
+            } catch {
+                preserveActionAuthority(on: &updated, previous: previous, configuration: configuration, error: error)
+            }
+        }
+        try SnapshotReconciler.requireValid(updated, asOf: now, actionConfiguration: configuration)
+        return SyncResult(snapshot: updated, transientEvents: transient)
+    }
+
+    func refreshActions(
+        previous: AppSnapshot,
+        configuration: ActionNotificationConfiguration = .load(),
+        now: Date = Date()
+    ) async throws -> AppSnapshot {
+        var updated = previous
         do {
             try await applyActionAuthority(to: &updated, previous: previous, configuration: configuration, now: now)
         } catch GitHubAPIError.unauthorized {
@@ -208,7 +231,7 @@ actor SyncCoordinator {
             preserveActionAuthority(on: &updated, previous: previous, configuration: configuration, error: error)
         }
         try SnapshotReconciler.requireValid(updated, asOf: now, actionConfiguration: configuration)
-        return SyncResult(snapshot: updated, transientEvents: transient)
+        return updated
     }
 
     func pollNotifications(previous: AppSnapshot) async throws -> (AppSnapshot, [AttentionItem]) {

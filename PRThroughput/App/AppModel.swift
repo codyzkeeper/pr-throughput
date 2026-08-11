@@ -35,11 +35,13 @@ final class AppModel: ObservableObject {
     private let notifications = LocalNotificationService()
     private var coordinator: SyncCoordinator?
     private var refreshLoop: Task<Void, Never>?
+    private var actionRefreshLoop: Task<Void, Never>?
     private var signInTask: Task<Void, Never>?
     private var transientResetTask: Task<Void, Never>?
     private var signInAttemptID: UUID?
     private var activeSessionID: UUID?
     private var activeSyncID: UUID?
+    private var activeActionSyncID: UUID?
     private var hasStarted = false
 
     init() {
@@ -152,11 +154,14 @@ final class AppModel: ObservableObject {
     func cancelSignIn() {
         signInTask?.cancel()
         refreshLoop?.cancel()
+        actionRefreshLoop?.cancel()
         signInTask = nil
         refreshLoop = nil
+        actionRefreshLoop = nil
         signInAttemptID = nil
         activeSessionID = nil
         activeSyncID = nil
+        activeActionSyncID = nil
         isSyncing = false
         coordinator = nil
         deviceAuthorization = nil
@@ -169,7 +174,14 @@ final class AppModel: ObservableObject {
         errorMessage = nil
         let previous = snapshot
         do {
-            let result = try await coordinator.refresh(previous: previous, configuration: actionConfiguration)
+            let needsActionAuthority = previous == nil
+                || previous?.metadata.lastSuccessfulActionLabelSync == nil
+                || previous?.metadata.actionConfigurationRevision != actionConfiguration.revision
+            let result = try await coordinator.refresh(
+                previous: previous,
+                configuration: actionConfiguration,
+                includeActionAuthority: needsActionAuthority
+            )
             guard activeSessionID == sessionID, connectionState == .connected else { return }
             guard result.snapshot.metadata.actionConfigurationRevision == actionConfiguration.revision else {
                 DispatchQueue.main.async { [weak self] in Task { await self?.refreshAssignedOnly() } }
@@ -284,19 +296,22 @@ final class AppModel: ObservableObject {
                 errorMessage = "The action-label configuration was saved, but the derived cache could not be cleared: \(error.localizedDescription)"
             }
         }
-        Task { await refreshAssignedOnly() }
+        Task { await refreshActionsOnly() }
     }
 
     func signOut() {
         signInTask?.cancel()
         refreshLoop?.cancel()
+        actionRefreshLoop?.cancel()
         transientResetTask?.cancel()
         signInTask = nil
         refreshLoop = nil
+        actionRefreshLoop = nil
         transientResetTask = nil
         signInAttemptID = nil
         activeSessionID = nil
         activeSyncID = nil
+        activeActionSyncID = nil
         isSyncing = false
         coordinator = nil
         var signOutErrors: [String] = []
@@ -357,7 +372,10 @@ final class AppModel: ObservableObject {
         guard activeSessionID == sessionID else { return }
         await refresh()
         guard activeSessionID == sessionID else { return }
+        await refreshActionsOnly()
+        guard activeSessionID == sessionID else { return }
         startRefreshLoop()
+        startActionRefreshLoop()
     }
 
     private func startRefreshLoop() {
@@ -372,6 +390,17 @@ final class AppModel: ObservableObject {
                 case .full: await self?.refresh()
                 case .assignedOnly: await self?.refreshAssignedOnly()
                 }
+            }
+        }
+    }
+
+    private func startActionRefreshLoop() {
+        actionRefreshLoop?.cancel()
+        actionRefreshLoop = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                guard !Task.isCancelled else { return }
+                await self?.refreshActionsOnly()
             }
         }
     }
@@ -391,7 +420,8 @@ final class AppModel: ObservableObject {
         do {
             let result = try await coordinator.refreshAssigned(
                 previous: snapshot,
-                configuration: actionConfiguration
+                configuration: actionConfiguration,
+                includeActionAuthority: false
             )
             guard activeSessionID == sessionID, connectionState == .connected else { return }
             guard result.snapshot.metadata.actionConfigurationRevision == actionConfiguration.revision else {
@@ -406,6 +436,43 @@ final class AppModel: ObservableObject {
             errorMessage = merged.metadata.lastError
             await reconcileSystemNotifications(previous: currentBeforePublish, sessionID: sessionID)
             showTransient(result.transientEvents)
+        } catch {
+            handleSyncFailure(error, sessionID: sessionID)
+        }
+    }
+
+    private func refreshActionsOnly() async {
+        guard let coordinator,
+              let previous = snapshot,
+              let sessionID = activeSessionID,
+              activeActionSyncID == nil else { return }
+        let syncID = UUID()
+        activeActionSyncID = syncID
+        defer {
+            if activeActionSyncID == syncID { activeActionSyncID = nil }
+        }
+        do {
+            let authority = try await coordinator.refreshActions(
+                previous: previous,
+                configuration: actionConfiguration
+            )
+            guard activeSessionID == sessionID,
+                  connectionState == .connected,
+                  authority.metadata.actionConfigurationRevision == actionConfiguration.revision,
+                  var current = snapshot else { return }
+            let currentBeforePublish = current
+            current.attentionItems = authority.attentionItems
+            current.metadata.actionAuthorityVersion = authority.metadata.actionAuthorityVersion
+            current.metadata.actionConfigurationRevision = authority.metadata.actionConfigurationRevision
+            current.metadata.lastSuccessfulActionLabelSync = authority.metadata.lastSuccessfulActionLabelSync
+            current.metadata.lastActionLabelError = authority.metadata.lastActionLabelError
+            current.metadata.actionSearchDisagreementCount = authority.metadata.actionSearchDisagreementCount
+            current.metadata.rateState = authority.metadata.rateState
+            let merged = mergeLocalPresentation(into: current, current: currentBeforePublish)
+            try snapshotStore?.save(merged)
+            snapshot = merged
+            isDataVerified = true
+            await reconcileSystemNotifications(previous: currentBeforePublish, sessionID: sessionID)
         } catch {
             handleSyncFailure(error, sessionID: sessionID)
         }
@@ -429,6 +496,15 @@ final class AppModel: ObservableObject {
     private func mergeLocalPresentation(into incoming: AppSnapshot, current: AppSnapshot?) -> AppSnapshot {
         guard let current else { return incoming }
         var merged = incoming
+        if (current.metadata.lastSuccessfulActionLabelSync ?? .distantPast)
+            > (incoming.metadata.lastSuccessfulActionLabelSync ?? .distantPast) {
+            merged.attentionItems = current.attentionItems
+            merged.metadata.actionAuthorityVersion = current.metadata.actionAuthorityVersion
+            merged.metadata.actionConfigurationRevision = current.metadata.actionConfigurationRevision
+            merged.metadata.lastSuccessfulActionLabelSync = current.metadata.lastSuccessfulActionLabelSync
+            merged.metadata.lastActionLabelError = current.metadata.lastActionLabelError
+            merged.metadata.actionSearchDisagreementCount = current.metadata.actionSearchDisagreementCount
+        }
         let currentByPull = Dictionary(uniqueKeysWithValues: current.attentionItems.compactMap { item in
             item.pullRequestID.map { ($0, item) }
         })
@@ -530,8 +606,11 @@ final class AppModel: ObservableObject {
         guard Self.shouldDisconnect(after: error) else { return }
 
         refreshLoop?.cancel()
+        actionRefreshLoop?.cancel()
         refreshLoop = nil
+        actionRefreshLoop = nil
         activeSessionID = nil
+        activeActionSyncID = nil
         coordinator = nil
         connectionState = .disconnected
         do {
