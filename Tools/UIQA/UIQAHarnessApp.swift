@@ -7,9 +7,19 @@ struct UIQAHarnessApp: App {
     init() {
         // Prevent the production view's task from reading Keychain or starting network work.
         setenv("XCTestConfigurationFilePath", "PRThroughputUIQA", 1)
+        let actionConfiguration = ActionNotificationConfiguration(
+            schemaVersion: 1,
+            organization: "Example-Organization",
+            rules: [
+                ActionRuleConfiguration(id: .decide, labelName: "owner: decide", isEnabled: true),
+                ActionRuleConfiguration(id: .invokeR2, labelName: "owner: invoke R2", isEnabled: true),
+                ActionRuleConfiguration(id: .assignReviewer, labelName: "owner: assign reviewer", isEnabled: true)
+            ]
+        )
+        try? actionConfiguration.save()
         let model = AppModel()
         model.connectionState = .connected
-        model.snapshot = Self.fixture()
+        model.snapshot = Self.fixture(configurationRevision: actionConfiguration.revision)
         model.setPopoverPresented(true)
         _model = StateObject(wrappedValue: model)
     }
@@ -25,7 +35,7 @@ struct UIQAHarnessApp: App {
         }
     }
 
-    private static func fixture(now: Date = Date()) -> AppSnapshot {
+    private static func fixture(configurationRevision: String, now: Date = Date()) -> AppSnapshot {
         let viewer = GitHubUser(id: "viewer", login: "ui-qa", kind: .user)
         let pulls = [
             pull("pr-1", number: 101, eligibleAt: now.addingTimeInterval(-24 * 3_600), state: .merged,
@@ -66,19 +76,33 @@ struct UIQAHarnessApp: App {
             events: events,
             handoffs: handoffs,
             assignedPullRequestIDs: ["pr-2"],
-            attentionItems: [AttentionItem(
-                id: "thread:qa", kind: .mention, level: .loud,
-                title: "Choose the rollout approach", repository: "example/repository",
+            attentionItems: [AttentionItem.action(
+                pullRequestID: "pr-action", title: "Choose the rollout approach",
+                repository: "example/repository", number: 106,
                 url: URL(string: "https://github.com/example/repository/pull/106")!,
-                createdAt: now, revisionID: "issueComment:106:1",
-                verificationVersion: AttentionItem.directMentionVerificationVersion
+                applications: [
+                    ActionLabelApplication(
+                        pullRequestID: "pr-action", ruleID: .decide, labelID: "label-red",
+                        labelEventID: "event-red", labelName: "decision needed", colorHex: "B60205",
+                        appliedAt: now, seenAt: nil, dismissedAt: nil
+                    ),
+                    ActionLabelApplication(
+                        pullRequestID: "pr-action", ruleID: .assignReviewer, labelID: "label-green",
+                        labelEventID: "event-green", labelName: "assign reviewer", colorHex: "0E8A16",
+                        appliedAt: now.addingTimeInterval(-60), seenAt: now, dismissedAt: nil
+                    )
+                ]
             )],
             metadata: SyncMetadata(
                 lastSuccessfulSync: now,
                 lastNotificationSync: now,
                 lastError: nil,
                 rateState: GitHubRateState(remaining: 4_999, resetAt: nil),
-                baselineEstablished: true
+                baselineEstablished: true,
+                actionAuthorityVersion: 1,
+                actionConfigurationRevision: configurationRevision,
+                lastSuccessfulActionLabelSync: now,
+                actionSearchDisagreementCount: 0
             )
         )
     }

@@ -43,7 +43,7 @@ actor OAuthDeviceFlowService {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        let body = "client_id=\(clientID.urlQueryEncoded)&scope=repo%20notifications%20read%3Auser"
+        let body = "client_id=\(clientID.urlQueryEncoded)&scope=repo%20read%3Auser"
         request.httpBody = Data(body.utf8)
         let (data, response) = try await session.data(for: request)
         try Self.validate(response: response, data: data)

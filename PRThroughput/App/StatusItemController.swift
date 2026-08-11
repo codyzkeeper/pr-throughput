@@ -102,11 +102,15 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             attributes: [.font: font, .foregroundColor: NSColor.white]
         )
         if !model.unseenItems.isEmpty {
+            let dotColor = model.unseenItems.compactMap(\.highestPriorityUnseenApplication).min {
+                if $0.ruleID.priority != $1.ruleID.priority { return $0.ruleID.priority < $1.ruleID.priority }
+                return $0.appliedAt > $1.appliedAt
+            }.flatMap { NSColor(actionHex: $0.colorHex) } ?? .systemRed
             title.append(NSAttributedString(
                 string: "  ●",
                 attributes: [
                     .font: NSFont.systemFont(ofSize: 7, weight: .semibold),
-                    .foregroundColor: NSColor.systemRed,
+                    .foregroundColor: dotColor,
                     .baselineOffset: 1
                 ]
             ))
@@ -161,7 +165,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         let attentionCount = model.unseenItems.count
         let assigned = "\(model.assignedCount) open pull requests assigned to you"
         guard attentionCount > 0 else { return assigned }
-        return "\(assigned), \(attentionCount) unseen direct mention\(attentionCount == 1 ? "" : "s")"
+        let highest = model.unseenItems.compactMap(\.highestPriorityUnseenApplication)
+            .min { $0.ruleID.priority < $1.ruleID.priority }?.labelName
+        return "\(assigned), \(attentionCount) unseen action\(attentionCount == 1 ? "" : "s")\(highest.map { ", highest priority \($0)" } ?? "")"
     }
 
     @objc private func togglePopover() {
@@ -184,5 +190,17 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     func popoverDidClose(_ notification: Notification) {
         model.setPopoverPresented(false)
+    }
+}
+
+private extension NSColor {
+    convenience init?(actionHex: String) {
+        guard actionHex.count == 6, let value = Int(actionHex, radix: 16) else { return nil }
+        self.init(
+            srgbRed: CGFloat((value >> 16) & 0xFF) / 255,
+            green: CGFloat((value >> 8) & 0xFF) / 255,
+            blue: CGFloat(value & 0xFF) / 255,
+            alpha: 1
+        )
     }
 }

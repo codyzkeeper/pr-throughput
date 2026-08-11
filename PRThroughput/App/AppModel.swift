@@ -22,6 +22,8 @@ final class AppModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var deviceAuthorization: DeviceAuthorization?
     @Published var transientKind: TransientEventKind?
+    @Published private(set) var notificationAuthorizationStatus = "Checking…"
+    @Published private(set) var actionConfiguration: ActionNotificationConfiguration
     @Published private(set) var isDataVerified = false
     @Published private(set) var isPopoverPresented = false
     @Published var oauthClientID: String {
@@ -33,21 +35,24 @@ final class AppModel: ObservableObject {
     private let notifications = LocalNotificationService()
     private var coordinator: SyncCoordinator?
     private var refreshLoop: Task<Void, Never>?
-    private var notificationLoop: Task<Void, Never>?
+    private var actionRefreshLoop: Task<Void, Never>?
     private var signInTask: Task<Void, Never>?
     private var transientResetTask: Task<Void, Never>?
     private var signInAttemptID: UUID?
     private var activeSessionID: UUID?
     private var activeSyncID: UUID?
+    private var activeActionSyncID: UUID?
     private var hasStarted = false
 
     init() {
         snapshotStore = try? SnapshotStore()
+        actionConfiguration = .load()
         let configured = Bundle.main.object(forInfoDictionaryKey: "GITHUB_CLIENT_ID") as? String
         oauthClientID = Self.resolveOAuthClientID(
             saved: UserDefaults.standard.string(forKey: "github.oauthClientID"),
             configured: configured
         )
+        Task { await refreshNotificationAuthorizationStatus() }
     }
 
     nonisolated static func resolveOAuthClientID(saved: String?, configured: String?) -> String {
@@ -66,7 +71,13 @@ final class AppModel: ObservableObject {
     }
 
     var unacknowledgedItems: [AttentionItem] {
-        snapshot?.attentionItems.filter(\.isActive) ?? []
+        (snapshot?.attentionItems.filter(\.isActive) ?? []).sorted { lhs, rhs in
+            let left = lhs.applications.filter { $0.dismissedAt == nil }.map(\.ruleID.priority).min() ?? .max
+            let right = rhs.applications.filter { $0.dismissedAt == nil }.map(\.ruleID.priority).min() ?? .max
+            if left != right { return left < right }
+            if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt }
+            return (lhs.repository, lhs.pullRequestNumber ?? 0) < (rhs.repository, rhs.pullRequestNumber ?? 0)
+        }
     }
 
     var unseenItems: [AttentionItem] {
@@ -143,13 +154,14 @@ final class AppModel: ObservableObject {
     func cancelSignIn() {
         signInTask?.cancel()
         refreshLoop?.cancel()
-        notificationLoop?.cancel()
+        actionRefreshLoop?.cancel()
         signInTask = nil
         refreshLoop = nil
-        notificationLoop = nil
+        actionRefreshLoop = nil
         signInAttemptID = nil
         activeSessionID = nil
         activeSyncID = nil
+        activeActionSyncID = nil
         isSyncing = false
         coordinator = nil
         deviceAuthorization = nil
@@ -162,18 +174,25 @@ final class AppModel: ObservableObject {
         errorMessage = nil
         let previous = snapshot
         do {
-            let result = try await coordinator.refresh(previous: previous)
+            let needsActionAuthority = previous == nil
+                || previous?.metadata.lastSuccessfulActionLabelSync == nil
+                || previous?.metadata.actionConfigurationRevision != actionConfiguration.revision
+            let result = try await coordinator.refresh(
+                previous: previous,
+                configuration: actionConfiguration,
+                includeActionAuthority: needsActionAuthority
+            )
             guard activeSessionID == sessionID, connectionState == .connected else { return }
+            guard result.snapshot.metadata.actionConfigurationRevision == actionConfiguration.revision else {
+                DispatchQueue.main.async { [weak self] in Task { await self?.refreshAssignedOnly() } }
+                return
+            }
             let currentBeforePublish = snapshot
-            let merged = mergeLocalAttention(into: result.snapshot, current: currentBeforePublish)
+            let merged = mergeLocalPresentation(into: result.snapshot, current: currentBeforePublish)
             try snapshotStore?.save(merged)
             snapshot = merged
             isDataVerified = true
-            let previousRevisions = revisionMap(currentBeforePublish?.attentionItems ?? [])
-            for item in merged.attentionItems where item.isUnseen && previousRevisions[item.id] != item.revisionID {
-                await notifications.deliver(item)
-                guard activeSessionID == sessionID else { return }
-            }
+            await reconcileSystemNotifications(previous: currentBeforePublish, sessionID: sessionID)
             showTransient(result.transientEvents)
         } catch {
             handleSyncFailure(error, sessionID: sessionID)
@@ -181,13 +200,20 @@ final class AppModel: ObservableObject {
     }
 
     func acknowledge(_ item: AttentionItem, open: Bool = true) {
+        defer { if open { NSWorkspace.shared.open(item.url) } }
         guard var updated = snapshot,
               let revisionID = item.revisionID,
               let index = updated.attentionItems.firstIndex(where: { $0.id == item.id }),
               updated.attentionItems[index].revisionID == revisionID else { return }
-        updated.attentionItems[index].seenRevisionID = revisionID
-        updated.attentionItems[index].acknowledgedRevisionID = revisionID
-        updated.attentionItems[index].acknowledgedAt = Date()
+        if item.kind == .actionLabels {
+            let mutation = updated.attentionItems[index].dismissing(revision: revisionID, at: Date())
+            guard mutation.didMutate else { return }
+            updated.attentionItems[index] = mutation.item
+        } else {
+            updated.attentionItems[index].seenRevisionID = revisionID
+            updated.attentionItems[index].acknowledgedRevisionID = revisionID
+            updated.attentionItems[index].acknowledgedAt = Date()
+        }
         do {
             try snapshotStore?.save(updated)
             snapshot = updated
@@ -195,8 +221,7 @@ final class AppModel: ObservableObject {
             errorMessage = "Could not save acknowledgement: \(error.localizedDescription)"
             return
         }
-        notifications.remove(id: item.notificationID)
-        if open { NSWorkspace.shared.open(item.url) }
+        notifications.remove(id: systemNotificationID(for: item, accountID: updated.viewer.id))
     }
 
     func markSeen(_ item: AttentionItem) {
@@ -205,11 +230,17 @@ final class AppModel: ObservableObject {
               let revisionID = item.revisionID,
               let index = updated.attentionItems.firstIndex(where: { $0.id == item.id }),
               updated.attentionItems[index].revisionID == revisionID else { return }
-        updated.attentionItems[index].seenRevisionID = revisionID
+        if item.kind == .actionLabels {
+            let mutation = updated.attentionItems[index].markingSeen(revision: revisionID, at: Date())
+            guard mutation.didMutate else { return }
+            updated.attentionItems[index] = mutation.item
+        } else {
+            updated.attentionItems[index].seenRevisionID = revisionID
+        }
         do {
             try snapshotStore?.save(updated)
             snapshot = updated
-            notifications.remove(id: item.notificationID)
+            notifications.remove(id: systemNotificationID(for: item, accountID: updated.viewer.id))
         } catch {
             errorMessage = "Could not save notification state: \(error.localizedDescription)"
         }
@@ -217,17 +248,25 @@ final class AppModel: ObservableObject {
 
     func setPopoverPresented(_ presented: Bool) {
         isPopoverPresented = presented
+        if presented { Task { await refreshAssignedOnly() } }
     }
 
     func acknowledgeAll() {
         guard var updated = snapshot else { return }
         let activeIndices = updated.attentionItems.indices.filter { updated.attentionItems[$0].isActive }
-        let notificationIDs = activeIndices.map { updated.attentionItems[$0].notificationID }
+        let notificationIDs = activeIndices.map {
+            systemNotificationID(for: updated.attentionItems[$0], accountID: updated.viewer.id)
+        }
         for index in activeIndices {
             guard let revisionID = updated.attentionItems[index].revisionID else { continue }
-            updated.attentionItems[index].seenRevisionID = revisionID
-            updated.attentionItems[index].acknowledgedRevisionID = revisionID
-            updated.attentionItems[index].acknowledgedAt = Date()
+            if updated.attentionItems[index].kind == .actionLabels {
+                updated.attentionItems[index] = updated.attentionItems[index]
+                    .dismissing(revision: revisionID, at: Date()).item
+            } else {
+                updated.attentionItems[index].seenRevisionID = revisionID
+                updated.attentionItems[index].acknowledgedRevisionID = revisionID
+                updated.attentionItems[index].acknowledgedAt = Date()
+            }
         }
         do {
             try snapshotStore?.save(updated)
@@ -238,18 +277,41 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func saveActionConfiguration(_ configuration: ActionNotificationConfiguration) throws {
+        let configuration = try configuration.validated()
+        try configuration.save()
+        actionConfiguration = configuration
+        notifications.removeAll()
+        if var updated = snapshot {
+            updated.attentionItems = []
+            updated.metadata.actionConfigurationRevision = configuration.revision
+            updated.metadata.lastSuccessfulActionLabelSync = nil
+            updated.metadata.lastActionLabelError = nil
+            // Configuration is authoritative immediately. Never leave rows from the
+            // previous authority visible merely because the derived cache write fails.
+            snapshot = updated
+            do {
+                try snapshotStore?.save(updated)
+            } catch {
+                errorMessage = "The action-label configuration was saved, but the derived cache could not be cleared: \(error.localizedDescription)"
+            }
+        }
+        Task { await refreshActionsOnly() }
+    }
+
     func signOut() {
         signInTask?.cancel()
         refreshLoop?.cancel()
-        notificationLoop?.cancel()
+        actionRefreshLoop?.cancel()
         transientResetTask?.cancel()
         signInTask = nil
         refreshLoop = nil
-        notificationLoop = nil
+        actionRefreshLoop = nil
         transientResetTask = nil
         signInAttemptID = nil
         activeSessionID = nil
         activeSyncID = nil
+        activeActionSyncID = nil
         isSyncing = false
         coordinator = nil
         var signOutErrors: [String] = []
@@ -274,20 +336,20 @@ final class AppModel: ObservableObject {
         activeSessionID = sessionID
         if var cached {
             var cacheChanged = false
-            let migratedAttention = SyncCoordinator.normalizeAttention(cached.attentionItems, now: Date())
-            if migratedAttention != cached.attentionItems {
-                cached.attentionItems = migratedAttention
-                // Re-evaluate current unread mention threads after discarding the
-                // old unverified taxonomy so legitimate tags are not lost.
+            if cached.metadata.actionAuthorityVersion != 1 {
+                cached.attentionItems = []
                 cached.metadata.lastNotificationSync = nil
+                cached.metadata.actionAuthorityVersion = 1
                 cacheChanged = true
+                notifications.removeAll()
             }
-            if cached.metadata.attentionVisibilityVersion != 6 {
-                for index in cached.attentionItems.indices where cached.attentionItems[index].isActive {
-                    cached.attentionItems[index].seenRevisionID = nil
-                }
-                cached.metadata.attentionVisibilityVersion = 6
+            if cached.metadata.actionConfigurationRevision != actionConfiguration.revision {
+                cached.attentionItems = []
+                cached.metadata.actionConfigurationRevision = actionConfiguration.revision
+                cached.metadata.lastSuccessfulActionLabelSync = nil
+                cached.metadata.lastActionLabelError = nil
                 cacheChanged = true
+                notifications.removeAll()
             }
             if cacheChanged { try snapshotStore?.save(cached) }
             let report = cached.reconciliation()
@@ -305,12 +367,15 @@ final class AppModel: ObservableObject {
         }
         coordinator = SyncCoordinator(api: api)
         connectionState = .connected
-        await notifications.requestAuthorization()
+        await notifications.requestAuthorizationIfNeeded()
+        await refreshNotificationAuthorizationStatus()
         guard activeSessionID == sessionID else { return }
         await refresh()
         guard activeSessionID == sessionID else { return }
+        await refreshActionsOnly()
+        guard activeSessionID == sessionID else { return }
         startRefreshLoop()
-        startNotificationLoop()
+        startActionRefreshLoop()
     }
 
     private func startRefreshLoop() {
@@ -329,62 +394,85 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func startActionRefreshLoop() {
+        actionRefreshLoop?.cancel()
+        actionRefreshLoop = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                guard !Task.isCancelled else { return }
+                await self?.refreshActionsOnly()
+            }
+        }
+    }
+
+    private func refreshNotificationAuthorizationStatus() async {
+        notificationAuthorizationStatus = await notifications.authorizationStatusDescription()
+    }
+
     nonisolated static func scheduledRefresh(atTick tick: Int) -> ScheduledRefresh {
         guard tick > 0 else { return .assignedOnly }
         return tick.isMultiple(of: 20) ? .full : .assignedOnly
-    }
-
-    private func startNotificationLoop() {
-        notificationLoop?.cancel()
-        notificationLoop = Task { [weak self] in
-            while !Task.isCancelled {
-                let interval = await self?.coordinator?.recommendedNotificationPollInterval() ?? 60
-                try? await Task.sleep(for: .seconds(interval))
-                guard !Task.isCancelled else { return }
-                await self?.pollNotifications()
-            }
-        }
     }
 
     private func refreshAssignedOnly() async {
         guard let coordinator, let snapshot, let sessionID = activeSessionID, let syncID = beginSync() else { return }
         defer { endSync(syncID) }
         do {
-            let result = try await coordinator.refreshAssigned(previous: snapshot)
+            let result = try await coordinator.refreshAssigned(
+                previous: snapshot,
+                configuration: actionConfiguration,
+                includeActionAuthority: false
+            )
             guard activeSessionID == sessionID, connectionState == .connected else { return }
+            guard result.snapshot.metadata.actionConfigurationRevision == actionConfiguration.revision else {
+                DispatchQueue.main.async { [weak self] in Task { await self?.refreshAssignedOnly() } }
+                return
+            }
             let currentBeforePublish = self.snapshot
-            let merged = mergeLocalAttention(into: result.snapshot, current: currentBeforePublish)
+            let merged = mergeLocalPresentation(into: result.snapshot, current: currentBeforePublish)
             try snapshotStore?.save(merged)
             self.snapshot = merged
             isDataVerified = true
             errorMessage = merged.metadata.lastError
-            let previousRevisions = revisionMap(currentBeforePublish?.attentionItems ?? [])
-            for item in merged.attentionItems where item.isUnseen && previousRevisions[item.id] != item.revisionID {
-                await notifications.deliver(item)
-                guard activeSessionID == sessionID else { return }
-            }
+            await reconcileSystemNotifications(previous: currentBeforePublish, sessionID: sessionID)
             showTransient(result.transientEvents)
         } catch {
             handleSyncFailure(error, sessionID: sessionID)
         }
     }
 
-    private func pollNotifications() async {
-        guard let coordinator, let snapshot, snapshot.metadata.baselineEstablished,
-              let sessionID = activeSessionID, let syncID = beginSync() else { return }
-        defer { endSync(syncID) }
+    private func refreshActionsOnly() async {
+        guard let coordinator,
+              let previous = snapshot,
+              let sessionID = activeSessionID,
+              activeActionSyncID == nil else { return }
+        let syncID = UUID()
+        activeActionSyncID = syncID
+        defer {
+            if activeActionSyncID == syncID { activeActionSyncID = nil }
+        }
         do {
-            let (updated, _) = try await coordinator.pollNotifications(previous: snapshot)
-            guard activeSessionID == sessionID, connectionState == .connected else { return }
-            let currentBeforePublish = self.snapshot
-            let merged = mergeLocalAttention(into: updated, current: currentBeforePublish)
+            let authority = try await coordinator.refreshActions(
+                previous: previous,
+                configuration: actionConfiguration
+            )
+            guard activeSessionID == sessionID,
+                  connectionState == .connected,
+                  authority.metadata.actionConfigurationRevision == actionConfiguration.revision,
+                  var current = snapshot else { return }
+            let currentBeforePublish = current
+            current.attentionItems = authority.attentionItems
+            current.metadata.actionAuthorityVersion = authority.metadata.actionAuthorityVersion
+            current.metadata.actionConfigurationRevision = authority.metadata.actionConfigurationRevision
+            current.metadata.lastSuccessfulActionLabelSync = authority.metadata.lastSuccessfulActionLabelSync
+            current.metadata.lastActionLabelError = authority.metadata.lastActionLabelError
+            current.metadata.actionSearchDisagreementCount = authority.metadata.actionSearchDisagreementCount
+            current.metadata.rateState = authority.metadata.rateState
+            let merged = mergeLocalPresentation(into: current, current: currentBeforePublish)
             try snapshotStore?.save(merged)
-            self.snapshot = merged
-            let previousRevisions = revisionMap(currentBeforePublish?.attentionItems ?? [])
-            for item in merged.attentionItems where item.isUnseen && previousRevisions[item.id] != item.revisionID {
-                await notifications.deliver(item)
-                guard activeSessionID == sessionID else { return }
-            }
+            snapshot = merged
+            isDataVerified = true
+            await reconcileSystemNotifications(previous: currentBeforePublish, sessionID: sessionID)
         } catch {
             handleSyncFailure(error, sessionID: sessionID)
         }
@@ -405,20 +493,87 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func revisionMap(_ items: [AttentionItem]) -> [String: String] {
-        Dictionary(uniqueKeysWithValues: items.compactMap { item in
-            item.revisionID.map { (item.id, $0) }
-        })
-    }
-
-    private func mergeLocalAttention(into incoming: AppSnapshot, current: AppSnapshot?) -> AppSnapshot {
+    private func mergeLocalPresentation(into incoming: AppSnapshot, current: AppSnapshot?) -> AppSnapshot {
         guard let current else { return incoming }
         var merged = incoming
-        merged.attentionItems = SyncCoordinator.normalizeAttention(
-            incoming.attentionItems + current.attentionItems,
-            now: Date()
-        )
+        if (current.metadata.lastSuccessfulActionLabelSync ?? .distantPast)
+            > (incoming.metadata.lastSuccessfulActionLabelSync ?? .distantPast) {
+            merged.attentionItems = current.attentionItems
+            merged.metadata.actionAuthorityVersion = current.metadata.actionAuthorityVersion
+            merged.metadata.actionConfigurationRevision = current.metadata.actionConfigurationRevision
+            merged.metadata.lastSuccessfulActionLabelSync = current.metadata.lastSuccessfulActionLabelSync
+            merged.metadata.lastActionLabelError = current.metadata.lastActionLabelError
+            merged.metadata.actionSearchDisagreementCount = current.metadata.actionSearchDisagreementCount
+        }
+        let currentByPull = Dictionary(uniqueKeysWithValues: current.attentionItems.compactMap { item in
+            item.pullRequestID.map { ($0, item) }
+        })
+        merged.attentionItems = incoming.attentionItems.map { item in
+            guard item.kind == .actionLabels,
+                  let pullRequestID = item.pullRequestID,
+                  let old = currentByPull[pullRequestID] else { return item }
+            let applications = ActionAttentionMerger.mergePresentation(
+                incoming: item.applications,
+                previous: old.applications
+            )
+            return AttentionItem.action(
+                pullRequestID: pullRequestID,
+                title: item.title,
+                repository: item.repository,
+                number: item.pullRequestNumber ?? 0,
+                url: item.url,
+                applications: applications,
+                deliveredApplicationRevision: nil
+            )
+        }
         return merged
+    }
+
+    private func reconcileSystemNotifications(previous: AppSnapshot?, sessionID: UUID) async {
+        guard let published = snapshot, activeSessionID == sessionID else { return }
+        let configurationRevision = published.metadata.actionConfigurationRevision
+        let accountID = published.viewer.id
+        let incomingIDs = Set(published.attentionItems.compactMap(\.pullRequestID))
+        for old in previous?.attentionItems ?? [] where old.kind == .actionLabels {
+            guard let pullRequestID = old.pullRequestID else { continue }
+            let current = published.attentionItems.first { $0.pullRequestID == pullRequestID }
+            if !incomingIDs.contains(pullRequestID) || current?.isUnseen != true {
+                notifications.remove(id: ActionNotificationIdentifier.value(
+                    accountID: accountID, pullRequestID: pullRequestID
+                ))
+            }
+        }
+
+        let candidates = published.attentionItems.filter { item in
+            item.kind == .actionLabels && item.hasUndeliveredApplication
+        }
+        for item in candidates {
+            guard item.kind == .actionLabels, item.hasUndeliveredApplication else { continue }
+            if await notifications.deliver(item, accountID: accountID) {
+                guard activeSessionID == sessionID,
+                      actionConfiguration.revision == configurationRevision,
+                      var latest = snapshot,
+                      let index = latest.attentionItems.firstIndex(where: { $0.id == item.id }),
+                      latest.attentionItems[index].revisionID == item.revisionID,
+                      latest.attentionItems[index].isUnseen else {
+                    notifications.remove(id: systemNotificationID(for: item, accountID: accountID))
+                    continue
+                }
+                latest.attentionItems[index] = latest.attentionItems[index]
+                    .markingUndeliveredApplicationsDelivered(at: Date())
+                snapshot = latest
+                do {
+                    try snapshotStore?.save(latest)
+                } catch {
+                    errorMessage = "Could not save notification delivery state: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func systemNotificationID(for item: AttentionItem, accountID: String) -> String {
+        guard item.kind == .actionLabels, let pullRequestID = item.pullRequestID else { return item.notificationID }
+        return ActionNotificationIdentifier.value(accountID: accountID, pullRequestID: pullRequestID)
     }
 
     private func beginSync() -> UUID? {
@@ -451,10 +606,11 @@ final class AppModel: ObservableObject {
         guard Self.shouldDisconnect(after: error) else { return }
 
         refreshLoop?.cancel()
-        notificationLoop?.cancel()
+        actionRefreshLoop?.cancel()
         refreshLoop = nil
-        notificationLoop = nil
+        actionRefreshLoop = nil
         activeSessionID = nil
+        activeActionSyncID = nil
         coordinator = nil
         connectionState = .disconnected
         do {

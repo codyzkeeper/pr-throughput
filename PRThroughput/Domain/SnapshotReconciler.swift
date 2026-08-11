@@ -15,22 +15,69 @@ struct DataIntegrityError: LocalizedError, Equatable {
 }
 
 enum SnapshotReconciler {
-    static func validate(_ snapshot: AppSnapshot, asOf: Date = Date()) -> ReconciliationReport {
+    static func validate(
+        _ snapshot: AppSnapshot,
+        asOf: Date = Date(),
+        actionConfiguration: ActionNotificationConfiguration? = nil
+    ) -> ReconciliationReport {
         var issues: [String] = []
+        let configuredRules = actionConfiguration.flatMap { try? $0.validated() }.map {
+            Dictionary(uniqueKeysWithValues: $0.enabledRules.map { ($0.id, $0.labelName.lowercased()) })
+        }
 
         appendDuplicateIssue(snapshot.pullRequests.map(\.id), label: "pull request", to: &issues)
         appendDuplicateIssue(snapshot.events.map(\.id), label: "timeline event", to: &issues)
         appendDuplicateIssue(snapshot.handoffs.map(\.id), label: "handoff", to: &issues)
-        appendDuplicateIssue(snapshot.attentionItems.map(\.id), label: "direct-mention thread", to: &issues)
+        appendDuplicateIssue(snapshot.attentionItems.map(\.id), label: "attention row", to: &issues)
+        appendDuplicateIssue(
+            snapshot.attentionItems.flatMap(\.applications).map(\.labelEventID),
+            label: "action-label application",
+            to: &issues
+        )
 
         for item in snapshot.attentionItems {
-            if !item.isVerifiedDirectMention {
-                issues.append("Direct-mention inbox contains unverified legacy data.")
-            }
             if item.url.scheme != "https" || item.url.host?.lowercased() != "github.com"
                 || !item.url.path.contains("/pull/") {
-                issues.append("Direct-mention inbox contains an invalid PR URL.")
+                issues.append("Attention inbox contains an invalid PR URL.")
             }
+            switch item.kind {
+            case .actionLabels:
+                guard let pullRequestID = item.pullRequestID, !item.applications.isEmpty else {
+                    issues.append("Action-label row is missing its PR identity or applications.")
+                    continue
+                }
+                if item.revisionID != AttentionItem.actionRevision(item.applications) {
+                    issues.append("Action-label row revision does not match its applications.")
+                }
+                appendDuplicateIssue(item.applications.map { $0.ruleID.rawValue }, label: "action rule in one PR row", to: &issues)
+                for application in item.applications {
+                    if application.pullRequestID != pullRequestID {
+                        issues.append("Action-label application references a different PR.")
+                    }
+                    if application.normalizedColorHex == nil {
+                        issues.append("Action-label application has an invalid label color.")
+                    }
+                    if let configuredRules,
+                       configuredRules[application.ruleID] != application.labelName.lowercased() {
+                        issues.append("Action-label application does not match the active configuration.")
+                    }
+                }
+            default:
+                if snapshot.metadata.actionAuthorityVersion == 1 {
+                    issues.append("Action-label authority contains active legacy attention data.")
+                } else if !item.isVerifiedDirectMention {
+                    issues.append("Direct-mention inbox contains unverified legacy data.")
+                }
+            }
+        }
+        if snapshot.metadata.actionAuthorityVersion == 1,
+           !snapshot.attentionItems.isEmpty,
+           snapshot.metadata.actionConfigurationRevision == nil {
+            issues.append("Action-label facts are missing their configuration revision.")
+        }
+        if let actionConfiguration,
+           snapshot.metadata.actionConfigurationRevision != actionConfiguration.revision {
+            issues.append("Action-label facts use a stale configuration revision.")
         }
 
         let pullIDs = Set(snapshot.pullRequests.map(\.id))
@@ -92,8 +139,12 @@ enum SnapshotReconciler {
         }
     }
 
-    static func requireValid(_ snapshot: AppSnapshot, asOf: Date = Date()) throws {
-        let report = validate(snapshot, asOf: asOf)
+    static func requireValid(
+        _ snapshot: AppSnapshot,
+        asOf: Date = Date(),
+        actionConfiguration: ActionNotificationConfiguration? = nil
+    ) throws {
+        let report = validate(snapshot, asOf: asOf, actionConfiguration: actionConfiguration)
         guard report.isValid else { throw DataIntegrityError(issues: report.issues) }
     }
 

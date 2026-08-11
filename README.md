@@ -18,11 +18,11 @@ The initial public build is ad-hoc signed because this project does not yet have
 - Opened, handoff, merge, approval, and changes-requested events in rolling 48-hour, 7-day, and 30-day windows
 - Opening-cohort merge completion, median open age, acceptance, and median time to merge
 - A small opened-versus-merged activity chart
-- A local, tag-only inbox for unread GitHub notifications that can be verified as a direct `@username` mention
+- A local **Needs attention** inbox driven by configurable labels on open pull requests in one GitHub organization
 
 The app does not mutate GitHub data. It stores the OAuth token in your local Keychain and does not persist source code, diffs, comments, or review bodies. No account data, token, metrics cache, preferences, or notifications are included in release artifacts. See [PRIVACY.md](PRIVACY.md) for the complete data-handling summary.
 
-The menu-bar red dot appears only for a verified direct mention that has not yet appeared in the inbox. Seeing the row clears the dot while leaving the row available; opening or clearing the row dismisses it. Assignments, review requests, team mentions, and review decisions never enter this inbox.
+Configure an organization and up to three ordered action labels in Settings. GitHub's current labels are authoritative: adding a configured label creates a quiet banner, feed row, and colored menu-bar dot; removing it or closing the PR removes that state. Multiple labels consolidate into one PR row. Seeing the row clears its dot while leaving the row available; opening or clearing it locally dismisses the current label applications until GitHub removes and reapplies them.
 
 ## Configure GitHub authentication
 
@@ -32,7 +32,7 @@ The menu-bar red dot appears only for a verified direct mention that has not yet
 4. Build and launch PR Throughput.
 5. Paste the OAuth App's public client ID into the onboarding field and choose **Sign in with GitHub**.
 
-No client secret is used. GitHub's OAuth `repo` scope is broad because GitHub does not provide read-only OAuth access to private repository pull requests. Organizations may require an administrator to approve the OAuth App.
+No client secret is used. New authorizations request `repo read:user`; GitHub's `repo` scope is broad because GitHub does not provide read-only OAuth access to private repository pull requests. The app does not request the GitHub `notifications` scope. Organizations may require an administrator to approve the OAuth App.
 
 ## Build
 
@@ -66,6 +66,14 @@ security find-generic-password -w -a oauth-token -s app.prthroughput.PRThroughpu
 ```
 
 The token is consumed through standard input and is never printed, persisted, or included in process arguments.
+
+To validate action labels too, set `PR_THROUGHPUT_ACTION_ORGANIZATION` and up to three
+`PR_THROUGHPUT_ACTION_LABEL_1`, `_2`, and `_3` environment variables. The harness checks
+the same direct-label authority, colors, safe PR URLs, configuration revision, and
+reconciliation invariants used by the app; it still performs no GitHub writes.
+For a focused low-cost check, pass `--action-only` and provide comma-separated GraphQL
+PR node IDs in `PR_THROUGHPUT_ACTION_CANDIDATE_IDS`; this is useful when deliberately
+testing around GitHub search-index lag without repeating the 30-day metrics crawl.
 
 To capture the canonical KPI snapshot used by the menu-bar UI or another local automation:
 

@@ -8,6 +8,24 @@ final class GitHubAPITests: XCTestCase {
         super.tearDown()
     }
 
+    func testAuthenticatedReadsBypassLocalResponseCaches() async throws {
+        StubURLProtocol.handler = { request in
+            XCTAssertEqual(request.cachePolicy, .reloadIgnoringLocalCacheData)
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Cache-Control"), "no-cache")
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+            )!
+            return (response, Data(#"{"data":{"viewer":{"id":"viewer-id","login":"octocat"}}}"#.utf8))
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let api = GitHubAPI(token: "test", session: URLSession(configuration: configuration))
+
+        let viewer = try await api.viewer()
+
+        XCTAssertEqual(viewer.login, "octocat")
+    }
+
     func testViewerUsesReadOnlyGraphQLQuery() async throws {
         StubURLProtocol.handler = { request in
             XCTAssertEqual(request.httpMethod, "POST")
@@ -375,6 +393,108 @@ final class GitHubAPITests: XCTestCase {
         } catch {
             XCTFail("Unexpected error: \(error)")
         }
+    }
+
+    func testActionDiscoveryUsesDirectLabelsAndNewestApplicationEvent() async throws {
+        var requestNumber = 0
+        StubURLProtocol.handler = { request in
+            requestNumber += 1
+            let body = try XCTUnwrap(request.httpBody ?? Self.readBodyStream(request.httpBodyStream))
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            let query = try XCTUnwrap(object["query"] as? String)
+            XCTAssertTrue(query.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("query"))
+            XCTAssertFalse(query.contains("mutation"))
+            let payload: String
+            if requestNumber == 1 {
+                payload = #"{"data":{"search":{"issueCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"__typename":"PullRequest","id":"PR_1","number":27,"title":"Test","url":"https://github.com/Org/repo/pull/27","createdAt":"2026-08-01T00:00:00Z","updatedAt":"2026-08-11T00:00:00Z","isDraft":true,"state":"OPEN","mergedAt":null,"closedAt":null,"author":{"__typename":"User","id":"author","login":"author"},"repository":{"nameWithOwner":"Org/repo"}}]}}}"#
+            } else {
+                payload = #"{"data":{"nodes":[{"id":"PR_1","number":27,"title":"Test","url":"https://github.com/Org/repo/pull/27","updatedAt":"2026-08-11T00:00:00Z","state":"OPEN","isDraft":true,"repository":{"nameWithOwner":"Org/repo"},"labels":{"pageInfo":{"hasNextPage":false,"endCursor":null,"hasPreviousPage":false,"startCursor":null},"nodes":[{"id":"LABEL","name":"action needed","color":"B60205"}]},"timelineItems":{"pageInfo":{"hasNextPage":false,"endCursor":null,"hasPreviousPage":false,"startCursor":null},"nodes":[{"__typename":"LabeledEvent","id":"old","createdAt":"2026-08-09T00:00:00Z","label":{"id":"LABEL","name":"action needed","color":"B60205"}},{"__typename":"UnlabeledEvent","id":"removed","createdAt":"2026-08-10T00:00:00Z","label":{"id":"LABEL","name":"action needed","color":"B60205"}},{"__typename":"LabeledEvent","id":"new","createdAt":"2026-08-11T00:00:00Z","label":{"id":"LABEL","name":"action needed","color":"B60205"}}]}}]}}"#
+            }
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(payload.utf8))
+        }
+        let api = GitHubAPI(token: "test", session: stubSession())
+
+        let result = try await api.actionPullRequests(configuration: actionConfiguration(), candidateIDs: [])
+
+        XCTAssertEqual(result.pullRequests.count, 1)
+        XCTAssertEqual(result.pullRequests[0].applications.map(\.labelEventID), ["new"])
+        XCTAssertEqual(result.pullRequests[0].applications[0].colorHex, "B60205")
+        XCTAssertEqual(requestNumber, 2)
+    }
+
+    func testSearchHitWithoutDirectCurrentLabelDoesNotCreateAction() async throws {
+        var requestNumber = 0
+        StubURLProtocol.handler = { request in
+            requestNumber += 1
+            let payload = requestNumber == 1
+                ? #"{"data":{"search":{"issueCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"__typename":"PullRequest","id":"PR_1","number":1,"title":"Test","url":"https://github.com/Org/repo/pull/1","createdAt":"2026-08-01T00:00:00Z","updatedAt":"2026-08-11T00:00:00Z","isDraft":false,"state":"OPEN","mergedAt":null,"closedAt":null,"author":null,"repository":{"nameWithOwner":"Org/repo"}}]}}}"#
+                : #"{"data":{"nodes":[{"id":"PR_1","number":1,"title":"Test","url":"https://github.com/Org/repo/pull/1","updatedAt":"2026-08-11T00:00:00Z","state":"OPEN","isDraft":false,"repository":{"nameWithOwner":"Org/repo"},"labels":{"pageInfo":{"hasNextPage":false,"endCursor":null,"hasPreviousPage":false,"startCursor":null},"nodes":[]},"timelineItems":{"pageInfo":{"hasNextPage":false,"endCursor":null,"hasPreviousPage":false,"startCursor":null},"nodes":[]}}]}}"#
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(payload.utf8))
+        }
+        let api = GitHubAPI(token: "test", session: stubSession())
+
+        let result = try await api.actionPullRequests(configuration: actionConfiguration(), candidateIDs: [])
+
+        XCTAssertTrue(result.pullRequests.isEmpty)
+        XCTAssertEqual(result.searchDisagreementCount, 1)
+    }
+
+    func testKnownCurrentLabelDoesNotRepaginateOldTransitions() async throws {
+        var requestCount = 0
+        StubURLProtocol.handler = { request in
+            requestCount += 1
+            let payload: String
+            switch requestCount {
+            case 1:
+                payload = #"{"data":{"search":{"issueCount":0,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}"#
+            case 2:
+                payload = #"{"data":{"nodes":[{"id":"PR_1","number":1,"title":"Test","url":"https://github.com/Org/repo/pull/1","updatedAt":"2026-08-11T00:00:00Z","state":"OPEN","isDraft":false,"repository":{"nameWithOwner":"Org/repo"},"labels":{"pageInfo":{"hasNextPage":false,"endCursor":null,"hasPreviousPage":false,"startCursor":null},"nodes":[{"id":"LABEL_1","name":"action needed","color":"B60205"}]},"timelineItems":{"pageInfo":{"hasNextPage":false,"endCursor":null,"hasPreviousPage":true,"startCursor":"older"},"nodes":[]}}]}}"#
+            default:
+                XCTFail("Known applications should avoid older transition pagination")
+                payload = #"{"data":{"node":{"timelineItems":{"pageInfo":{"hasNextPage":false,"endCursor":null,"hasPreviousPage":false,"startCursor":null},"nodes":[]}}}}"#
+            }
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(payload.utf8))
+        }
+        let appliedAt = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-01T00:00:00Z"))
+        let known = ActionLabelApplication(
+            pullRequestID: "PR_1",
+            ruleID: .decide,
+            labelID: "LABEL_1",
+            labelEventID: "EVENT_1",
+            labelName: "action needed",
+            colorHex: "B60205",
+            appliedAt: appliedAt,
+            seenAt: nil,
+            dismissedAt: nil
+        )
+        let api = GitHubAPI(token: "test", session: stubSession())
+
+        let result = try await api.actionPullRequests(
+            configuration: actionConfiguration(),
+            candidateIDs: ["PR_1"],
+            knownApplications: ["PR_1": ["LABEL_1": known]]
+        )
+
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertEqual(result.pullRequests.first?.applications.first?.labelEventID, "EVENT_1")
+    }
+
+    private func actionConfiguration() -> ActionNotificationConfiguration {
+        ActionNotificationConfiguration(
+            schemaVersion: ActionNotificationConfiguration.schemaVersion,
+            organization: "Org",
+            rules: [
+                ActionRuleConfiguration(id: .decide, labelName: "action needed", isEnabled: true),
+                ActionRuleConfiguration(id: .invokeR2, labelName: "", isEnabled: false),
+                ActionRuleConfiguration(id: .assignReviewer, labelName: "", isEnabled: false)
+            ]
+        )
+    }
+
+    private func stubSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        return URLSession(configuration: configuration)
     }
 }
 

@@ -178,16 +178,38 @@ struct MenuPopoverView: View {
                 ForEach(model.unacknowledgedItems) { item in
                 Button { model.acknowledge(item) } label: {
                     HStack(spacing: 9) {
-                        Image(systemName: "at").foregroundStyle(.red)
-                        VStack(alignment: .leading, spacing: 2) {
+                        Circle()
+                            .fill(actionColor(item.highestPriorityActiveApplication?.colorHex))
+                            .frame(width: 8, height: 8)
+                        VStack(alignment: .leading, spacing: 5) {
                             Text(item.title).lineLimit(1).foregroundStyle(.primary)
-                            Text(item.repository).font(.caption).foregroundStyle(.secondary)
+                            HStack(spacing: 5) {
+                                Text(item.repository)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                ForEach(item.applications.sorted { $0.ruleID.priority < $1.ruleID.priority }) { application in
+                                    Text(application.labelName)
+                                        .font(.caption2)
+                                        .lineLimit(1)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 2)
+                                        .background(actionColor(application.colorHex), in: Capsule())
+                                        .foregroundStyle(actionTextColor(application.colorHex))
+                                        .help(application.labelName)
+                                }
+                            }
                         }
                         Spacer()
                         Image(systemName: "arrow.up.right").font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 .buttonStyle(.plain)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(item.repository), pull request \(item.pullRequestNumber ?? 0), \(item.title)")
+                .accessibilityValue(item.applications.sorted { $0.ruleID.priority < $1.ruleID.priority }
+                    .map(\.labelName).joined(separator: ", "))
+                .accessibilityHint("Opens the pull request and dismisses its current action labels")
                 .background {
                     GeometryReader { row in
                         Color.clear.preference(
@@ -201,6 +223,23 @@ struct MenuPopoverView: View {
         }
         .padding(12)
         .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func actionColor(_ hex: String?) -> Color {
+        guard let hex, hex.count == 6, let value = Int(hex, radix: 16) else { return .secondary }
+        return Color(
+            red: Double((value >> 16) & 0xFF) / 255,
+            green: Double((value >> 8) & 0xFF) / 255,
+            blue: Double(value & 0xFF) / 255
+        )
+    }
+
+    private func actionTextColor(_ hex: String) -> Color {
+        guard hex.count == 6, let value = Int(hex, radix: 16) else { return .primary }
+        let red = Double((value >> 16) & 0xFF) / 255
+        let green = Double((value >> 8) & 0xFF) / 255
+        let blue = Double(value & 0xFF) / 255
+        return (0.299 * red + 0.587 * green + 0.114 * blue) > 0.58 ? .black : .white
     }
 
     private func scheduleAttentionVisibilityCheck(_ frames: [String: CGRect]) {
