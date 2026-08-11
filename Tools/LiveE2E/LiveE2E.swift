@@ -34,6 +34,27 @@ struct LiveE2E {
 
         let api = GitHubAPI(token: value)
         let viewer = try await api.viewer()
+        let actionConfiguration = try actionConfigurationFromEnvironment()
+        if options.actionOnly {
+            let candidateIDs = Set((ProcessInfo.processInfo.environment["PR_THROUGHPUT_ACTION_CANDIDATE_IDS"] ?? "")
+                .split(separator: ",").map(String.init))
+            let discovery = try await api.actionPullRequests(
+                configuration: actionConfiguration,
+                candidateIDs: candidateIDs
+            )
+            try validateActionRows(discovery.pullRequests, configuration: actionConfiguration)
+            let summary: [String: Any] = [
+                "account": viewer.login,
+                "actionPullRequests": discovery.pullRequests.count,
+                "actionLabelFacts": discovery.pullRequests.flatMap(\.applications).count,
+                "actionSearchDisagreements": discovery.searchDisagreementCount,
+                "rateRemaining": await api.rateState.remaining ?? -1
+            ]
+            let data = try JSONSerialization.data(withJSONObject: summary, options: [.sortedKeys])
+            FileHandle.standardOutput.write(data)
+            FileHandle.standardOutput.write(Data("\n".utf8))
+            return
+        }
         let assigned = try await api.searchPullRequests(
             query: "is:pr is:open assignee:\(viewer.login) draft:false"
         )
@@ -42,7 +63,6 @@ struct LiveE2E {
             throw LiveE2EError.invariant("assigned pull-request discovery")
         }
 
-        let actionConfiguration = try actionConfigurationFromEnvironment()
         let coordinator = SyncCoordinator(api: api)
         let first = try await coordinator.refresh(previous: nil, configuration: actionConfiguration)
         try validate(first.snapshot, viewer: viewer, configuration: actionConfiguration)
@@ -98,6 +118,20 @@ struct LiveE2E {
         let data = try JSONSerialization.data(withJSONObject: summary, options: [.sortedKeys])
         FileHandle.standardOutput.write(data)
         FileHandle.standardOutput.write(Data("\n".utf8))
+    }
+
+    private static func validateActionRows(
+        _ rows: [GitHubActionPullRequest],
+        configuration: ActionNotificationConfiguration
+    ) throws {
+        try require(configuration.isConfigured, "action-only mode requires action-label configuration")
+        try require(Set(rows.map(\.id)).count == rows.count, "duplicate action rows")
+        try require(rows.allSatisfy {
+            !$0.applications.isEmpty && $0.url.scheme == "https" && $0.url.host == "github.com"
+        }, "invalid or unsafe action row")
+        let applications = rows.flatMap(\.applications)
+        try require(Set(applications.map(\.labelEventID)).count == applications.count, "duplicate label application IDs")
+        try require(applications.allSatisfy { $0.normalizedColorHex != nil }, "invalid action label color")
     }
 
     private static func validate(
@@ -171,18 +205,26 @@ struct LiveE2E {
 
     private struct Options {
         let canonicalMetrics: Bool
+        let actionOnly: Bool
 
         init(arguments: [String]) throws {
             var canonicalMetrics = false
+            var actionOnly = false
             for argument in arguments {
                 switch argument {
                 case "--canonical-metrics":
                     canonicalMetrics = true
+                case "--action-only":
+                    actionOnly = true
                 default:
                     throw LiveE2EError.invalidArguments("Unknown argument: \(argument)")
                 }
             }
+            guard !(canonicalMetrics && actionOnly) else {
+                throw LiveE2EError.invalidArguments("Choose either --canonical-metrics or --action-only.")
+            }
             self.canonicalMetrics = canonicalMetrics
+            self.actionOnly = actionOnly
         }
     }
 }

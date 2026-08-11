@@ -89,7 +89,7 @@ actor GitHubAPI {
 
     func actionPullRequests(
         configuration: ActionNotificationConfiguration,
-        previouslyKnownIDs: Set<String>
+        candidateIDs: Set<String>
     ) async throws -> GitHubActionDiscovery {
         let configuration = try configuration.validated()
         guard !configuration.enabledRules.isEmpty else {
@@ -102,7 +102,7 @@ actor GitHubAPI {
                 searchNodes[node.id] = node
             }
         }
-        let allIDs = Set(searchNodes.keys).union(previouslyKnownIDs)
+        let allIDs = Set(searchNodes.keys).union(candidateIDs)
         var direct: [GitHubActionPullRequest] = []
         for chunk in allIDs.sorted().chunked(into: 20) {
             direct.append(contentsOf: try await directActionPullRequests(ids: chunk, configuration: configuration))

@@ -396,7 +396,7 @@ final class GitHubAPITests: XCTestCase {
         }
         let api = GitHubAPI(token: "test", session: stubSession())
 
-        let result = try await api.actionPullRequests(configuration: actionConfiguration(), previouslyKnownIDs: [])
+        let result = try await api.actionPullRequests(configuration: actionConfiguration(), candidateIDs: [])
 
         XCTAssertEqual(result.pullRequests.count, 1)
         XCTAssertEqual(result.pullRequests[0].applications.map(\.labelEventID), ["new"])
@@ -415,7 +415,7 @@ final class GitHubAPITests: XCTestCase {
         }
         let api = GitHubAPI(token: "test", session: stubSession())
 
-        let result = try await api.actionPullRequests(configuration: actionConfiguration(), previouslyKnownIDs: [])
+        let result = try await api.actionPullRequests(configuration: actionConfiguration(), candidateIDs: [])
 
         XCTAssertTrue(result.pullRequests.isEmpty)
         XCTAssertEqual(result.searchDisagreementCount, 1)

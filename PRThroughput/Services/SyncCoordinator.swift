@@ -330,10 +330,14 @@ actor SyncCoordinator {
         let priorItems = previous?.metadata.actionConfigurationRevision == revision
             ? previous?.attentionItems.filter { $0.kind == .actionLabels } ?? []
             : []
-        let knownIDs = Set(priorItems.compactMap(\.pullRequestID))
+        // Search is the complete organization-wide discovery lane, but GitHub's
+        // search index can lag behind a label mutation. Directly recheck a bounded
+        // hot set so recently active automation PRs update on the 15-second lane
+        // without crawling every open PR in the organization.
+        let candidateIDs = Self.actionCandidateIDs(snapshot: snapshot, priorItems: priorItems)
         let discovery = try await api.actionPullRequests(
             configuration: configuration,
-            previouslyKnownIDs: knownIDs
+            candidateIDs: candidateIDs
         )
         let priorByPull = Dictionary(
             uniqueKeysWithValues: priorItems.compactMap { item in item.pullRequestID.map { ($0, item) } }
@@ -358,6 +362,17 @@ actor SyncCoordinator {
         snapshot.metadata.lastActionLabelError = nil
         snapshot.metadata.actionSearchDisagreementCount = discovery.searchDisagreementCount
         snapshot.metadata.rateState = await api.rateState
+    }
+
+    static func actionCandidateIDs(snapshot: AppSnapshot, priorItems: [AttentionItem]) -> Set<String> {
+        let recentOpenAuthoredIDs = snapshot.pullRequests
+            .filter { $0.state == .open }
+            .sorted { $0.updatedAt > $1.updatedAt }
+            .prefix(20)
+            .map(\.id)
+        return Set(priorItems.compactMap(\.pullRequestID))
+            .union(snapshot.assignedPullRequestIDs)
+            .union(recentOpenAuthoredIDs)
     }
 
     private func preserveActionAuthority(

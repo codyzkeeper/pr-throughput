@@ -71,6 +71,9 @@ To validate action labels too, set `PR_THROUGHPUT_ACTION_ORGANIZATION` and up to
 `PR_THROUGHPUT_ACTION_LABEL_1`, `_2`, and `_3` environment variables. The harness checks
 the same direct-label authority, colors, safe PR URLs, configuration revision, and
 reconciliation invariants used by the app; it still performs no GitHub writes.
+For a focused low-cost check, pass `--action-only` and provide comma-separated GraphQL
+PR node IDs in `PR_THROUGHPUT_ACTION_CANDIDATE_IDS`; this is useful when deliberately
+testing around GitHub search-index lag without repeating the 30-day metrics crawl.
 
 To capture the canonical KPI snapshot used by the menu-bar UI or another local automation:
 

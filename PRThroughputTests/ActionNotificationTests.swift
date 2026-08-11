@@ -110,6 +110,32 @@ final class ActionNotificationTests: XCTestCase {
             .applications.allSatisfy { $0.deliveredAt != nil })
     }
 
+    func testFastActionCandidatesIncludePriorAssignedAndOnlyTwentyMostRecentAuthoredPRs() {
+        var snapshot = emptySnapshot(actionItems: [])
+        snapshot.assignedPullRequestIDs = ["assigned"]
+        snapshot.pullRequests = (0..<25).map { index in
+            PullRequestSnapshot(
+                id: "authored-\(index)", repository: "Org/repo", number: index + 1,
+                title: "PR \(index)", url: URL(string: "https://github.com/Org/repo/pull/\(index + 1)")!,
+                authorID: "me", eligibleAt: now.addingTimeInterval(-1_000),
+                updatedAt: now.addingTimeInterval(TimeInterval(-index)), isDraft: false,
+                state: .open, mergedAt: nil, closedAt: nil
+            )
+        }
+
+        let candidates = SyncCoordinator.actionCandidateIDs(
+            snapshot: snapshot,
+            priorItems: [actionItem()]
+        )
+
+        XCTAssertTrue(candidates.contains("assigned"))
+        XCTAssertTrue(candidates.contains("PR_1"))
+        XCTAssertTrue(candidates.contains("authored-0"))
+        XCTAssertTrue(candidates.contains("authored-19"))
+        XCTAssertFalse(candidates.contains("authored-20"))
+        XCTAssertEqual(candidates.count, 22)
+    }
+
     func testSystemNotificationIdentifierIsStableAccountScopedAndOpaque() {
         let first = ActionNotificationIdentifier.value(accountID: "account-a", pullRequestID: "PR_1")
         XCTAssertEqual(first, ActionNotificationIdentifier.value(accountID: "account-a", pullRequestID: "PR_1"))
