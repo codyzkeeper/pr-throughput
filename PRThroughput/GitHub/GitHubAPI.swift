@@ -393,7 +393,10 @@ actor GitHubAPI {
     }
 
     private func authorizedRequest(url: URL) -> URLRequest {
-        var request = URLRequest(url: url)
+        // GitHub is the authority for every refresh. In particular, action-label
+        // removals must not be hidden by a cached GraphQL POST response.
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("2026-03-10", forHTTPHeaderField: "X-GitHub-Api-Version")

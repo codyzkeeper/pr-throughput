@@ -8,6 +8,24 @@ final class GitHubAPITests: XCTestCase {
         super.tearDown()
     }
 
+    func testAuthenticatedReadsBypassLocalResponseCaches() async throws {
+        StubURLProtocol.handler = { request in
+            XCTAssertEqual(request.cachePolicy, .reloadIgnoringLocalCacheData)
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Cache-Control"), "no-cache")
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+            )!
+            return (response, Data(#"{"data":{"viewer":{"id":"viewer-id","login":"octocat"}}}"#.utf8))
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let api = GitHubAPI(token: "test", session: URLSession(configuration: configuration))
+
+        let viewer = try await api.viewer()
+
+        XCTAssertEqual(viewer.login, "octocat")
+    }
+
     func testViewerUsesReadOnlyGraphQLQuery() async throws {
         StubURLProtocol.handler = { request in
             XCTAssertEqual(request.httpMethod, "POST")
