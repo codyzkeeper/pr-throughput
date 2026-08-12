@@ -135,7 +135,9 @@ struct ActionLabelApplication: Codable, Hashable, Identifiable, Sendable {
     var deliveredAt: Date? = nil
 
     var id: String { labelEventID }
-    var isUnseen: Bool { dismissedAt == nil && seenAt == nil }
+    // `dismissedAt` is retained only to decode caches written by v0.2.0. It no
+    // longer controls visibility; only the label's presence on GitHub does.
+    var isUnseen: Bool { seenAt == nil }
     var normalizedColorHex: String? {
         colorHex.range(of: #"^[0-9A-Fa-f]{6}$"#, options: .regularExpression) == nil ? nil : colorHex.uppercased()
     }

@@ -78,7 +78,10 @@ struct AttentionItem: Codable, Hashable, Identifiable, Sendable {
     }
 
     var isActive: Bool {
-        if kind == .actionLabels { return applications.contains { $0.dismissedAt == nil } }
+        // GitHub is the sole authority for action-row visibility. Local interaction
+        // may mark an application seen, but it must never hide a label that is
+        // still present on an open pull request.
+        if kind == .actionLabels { return !applications.isEmpty }
         guard let revisionID, isVerifiedDirectMention else { return false }
         return acknowledgedRevisionID != revisionID
     }
@@ -125,7 +128,7 @@ struct AttentionItem: Codable, Hashable, Identifiable, Sendable {
     }
 
     var highestPriorityActiveApplication: ActionLabelApplication? {
-        applications.filter { $0.dismissedAt == nil }.min {
+        applications.min {
             if $0.ruleID.priority != $1.ruleID.priority { return $0.ruleID.priority < $1.ruleID.priority }
             return $0.appliedAt > $1.appliedAt
         }
@@ -154,18 +157,6 @@ struct AttentionItem: Codable, Hashable, Identifiable, Sendable {
     static func actionRevision(_ applications: [ActionLabelApplication]) -> String {
         let data = Data(applications.map(\.labelEventID).sorted().joined(separator: "\0").utf8)
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    }
-
-    func dismissing(revision: String, at date: Date) -> (item: AttentionItem, didMutate: Bool) {
-        guard kind == .actionLabels, revisionID == revision else { return (self, false) }
-        var copy = self
-        var values = applications
-        for index in values.indices where values[index].dismissedAt == nil {
-            values[index].seenAt = values[index].seenAt ?? date
-            values[index].dismissedAt = date
-        }
-        copy.actionApplications = values
-        return (copy, true)
     }
 
     func markingSeen(revision: String, at date: Date) -> (item: AttentionItem, didMutate: Bool) {

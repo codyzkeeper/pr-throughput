@@ -72,8 +72,8 @@ final class AppModel: ObservableObject {
 
     var unacknowledgedItems: [AttentionItem] {
         (snapshot?.attentionItems.filter(\.isActive) ?? []).sorted { lhs, rhs in
-            let left = lhs.applications.filter { $0.dismissedAt == nil }.map(\.ruleID.priority).min() ?? .max
-            let right = rhs.applications.filter { $0.dismissedAt == nil }.map(\.ruleID.priority).min() ?? .max
+            let left = lhs.applications.map(\.ruleID.priority).min() ?? .max
+            let right = rhs.applications.map(\.ruleID.priority).min() ?? .max
             if left != right { return left < right }
             if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt }
             return (lhs.repository, lhs.pullRequestNumber ?? 0) < (rhs.repository, rhs.pullRequestNumber ?? 0)
@@ -206,7 +206,7 @@ final class AppModel: ObservableObject {
               let index = updated.attentionItems.firstIndex(where: { $0.id == item.id }),
               updated.attentionItems[index].revisionID == revisionID else { return }
         if item.kind == .actionLabels {
-            let mutation = updated.attentionItems[index].dismissing(revision: revisionID, at: Date())
+            let mutation = updated.attentionItems[index].markingSeen(revision: revisionID, at: Date())
             guard mutation.didMutate else { return }
             updated.attentionItems[index] = mutation.item
         } else {
@@ -261,7 +261,7 @@ final class AppModel: ObservableObject {
             guard let revisionID = updated.attentionItems[index].revisionID else { continue }
             if updated.attentionItems[index].kind == .actionLabels {
                 updated.attentionItems[index] = updated.attentionItems[index]
-                    .dismissing(revision: revisionID, at: Date()).item
+                    .markingSeen(revision: revisionID, at: Date()).item
             } else {
                 updated.attentionItems[index].seenRevisionID = revisionID
                 updated.attentionItems[index].acknowledgedRevisionID = revisionID

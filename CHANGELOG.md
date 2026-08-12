@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 — 2026-08-11
+
+- Kept Needs attention rows visible until their configured GitHub label is removed or the pull request closes.
+- Changed row clicks and the bulk action to mark notifications seen without locally dismissing label-authoritative state.
+- Restored rows dismissed by 0.2.0 as seen rows during the upgrade.
+
 ## 0.2.0 — 2026-08-11
 
 - Replaced direct-mention inbox authority with configurable GitHub labels on open PRs in one organization.

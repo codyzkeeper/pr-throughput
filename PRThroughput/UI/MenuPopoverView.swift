@@ -172,7 +172,7 @@ struct MenuPopoverView: View {
             HStack {
                 Text("Needs attention").font(.headline)
                 Spacer()
-                Button("Clear all") { model.acknowledgeAll() }.buttonStyle(.plain).font(.caption)
+                Button("Mark all seen") { model.acknowledgeAll() }.buttonStyle(.plain).font(.caption)
             }
             LazyVStack(spacing: 8) {
                 ForEach(model.unacknowledgedItems) { item in

@@ -145,7 +145,36 @@ final class ActionNotificationTests: XCTestCase {
         XCTAssertFalse(first.contains("PR_1"))
     }
 
-    func testStaleRevisionCannotDismissNewApplication() {
+    func testViewingActionRowMarksItSeenButKeepsItActiveWhileLabelExists() {
+        let item = AttentionItem.action(
+            pullRequestID: "PR_1", title: "PR", repository: "org/repo", number: 1,
+            url: URL(string: "https://github.com/org/repo/pull/1")!,
+            applications: [application(rule: .decide, event: "one", color: "B60205")]
+        )
+
+        let result = item.markingSeen(revision: item.revisionID!, at: now)
+
+        XCTAssertTrue(result.didMutate)
+        XCTAssertTrue(result.item.isActive)
+        XCTAssertFalse(result.item.isUnseen)
+        XCTAssertEqual(result.item.applications.count, 1)
+    }
+
+    func testLegacyDismissedApplicationRemainsVisibleButSeen() {
+        var legacy = application(rule: .decide, event: "one", color: "B60205")
+        legacy.seenAt = now
+        legacy.dismissedAt = now
+        let item = AttentionItem.action(
+            pullRequestID: "PR_1", title: "PR", repository: "org/repo", number: 1,
+            url: URL(string: "https://github.com/org/repo/pull/1")!, applications: [legacy]
+        )
+
+        XCTAssertTrue(item.isActive)
+        XCTAssertFalse(item.isUnseen)
+        XCTAssertEqual(item.highestPriorityActiveApplication?.labelEventID, "one")
+    }
+
+    func testStaleRevisionCannotMarkNewApplicationSeen() {
         let first = AttentionItem.action(
             pullRequestID: "PR_1", title: "PR", repository: "org/repo", number: 1,
             url: URL(string: "https://github.com/org/repo/pull/1")!,
@@ -158,8 +187,8 @@ final class ActionNotificationTests: XCTestCase {
         )
 
         XCTAssertNotEqual(first.revisionID, second.revisionID)
-        XCTAssertFalse(second.dismissing(revision: first.revisionID!, at: now).didMutate)
-        XCTAssertTrue(second.dismissing(revision: second.revisionID!, at: now).didMutate)
+        XCTAssertFalse(second.markingSeen(revision: first.revisionID!, at: now).didMutate)
+        XCTAssertTrue(second.markingSeen(revision: second.revisionID!, at: now).didMutate)
     }
 
     func testReconcilerRejectsDuplicateApplicationIDsAndBadColors() {

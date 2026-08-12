@@ -22,7 +22,7 @@ The initial public build is ad-hoc signed because this project does not yet have
 
 The app does not mutate GitHub data. It stores the OAuth token in your local Keychain and does not persist source code, diffs, comments, or review bodies. No account data, token, metrics cache, preferences, or notifications are included in release artifacts. See [PRIVACY.md](PRIVACY.md) for the complete data-handling summary.
 
-Configure an organization and up to three ordered action labels in Settings. GitHub's current labels are authoritative: adding a configured label creates a quiet banner, feed row, and colored menu-bar dot; removing it or closing the PR removes that state. Multiple labels consolidate into one PR row. Seeing the row clears its dot while leaving the row available; opening or clearing it locally dismisses the current label applications until GitHub removes and reapplies them.
+Configure an organization and up to three ordered action labels in Settings. GitHub's current labels are authoritative: adding a configured label creates a quiet banner, feed row, and colored menu-bar dot; removing it or closing the PR removes that state. Multiple labels consolidate into one PR row. Seeing or opening the row clears its dot while leaving the row visible; only GitHub label removal or PR closure removes it.
 
 ## Configure GitHub authentication
 
