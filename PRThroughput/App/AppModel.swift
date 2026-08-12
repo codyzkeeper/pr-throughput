@@ -52,6 +52,9 @@ final class AppModel: ObservableObject {
             saved: UserDefaults.standard.string(forKey: "github.oauthClientID"),
             configured: configured
         )
+        notifications.setOpenHandler { [weak self] identifier in
+            self?.markSystemNotificationSeen(identifier)
+        }
         Task { await refreshNotificationAuthorizationStatus() }
     }
 
@@ -188,7 +191,8 @@ final class AppModel: ObservableObject {
                 return
             }
             let currentBeforePublish = snapshot
-            let merged = mergeLocalPresentation(into: result.snapshot, current: currentBeforePublish)
+            let merged = Self.mergeLocalPresentation(into: result.snapshot, current: currentBeforePublish)
+            try SnapshotReconciler.requireValid(merged, actionConfiguration: actionConfiguration)
             try snapshotStore?.save(merged)
             snapshot = merged
             isDataVerified = true
@@ -429,7 +433,8 @@ final class AppModel: ObservableObject {
                 return
             }
             let currentBeforePublish = self.snapshot
-            let merged = mergeLocalPresentation(into: result.snapshot, current: currentBeforePublish)
+            let merged = Self.mergeLocalPresentation(into: result.snapshot, current: currentBeforePublish)
+            try SnapshotReconciler.requireValid(merged, actionConfiguration: actionConfiguration)
             try snapshotStore?.save(merged)
             self.snapshot = merged
             isDataVerified = true
@@ -468,7 +473,8 @@ final class AppModel: ObservableObject {
             current.metadata.lastActionLabelError = authority.metadata.lastActionLabelError
             current.metadata.actionSearchDisagreementCount = authority.metadata.actionSearchDisagreementCount
             current.metadata.rateState = authority.metadata.rateState
-            let merged = mergeLocalPresentation(into: current, current: currentBeforePublish)
+            let merged = Self.mergeLocalPresentation(into: current, current: currentBeforePublish)
+            try SnapshotReconciler.requireValid(merged, actionConfiguration: actionConfiguration)
             try snapshotStore?.save(merged)
             snapshot = merged
             isDataVerified = true
@@ -493,7 +499,10 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func mergeLocalPresentation(into incoming: AppSnapshot, current: AppSnapshot?) -> AppSnapshot {
+    nonisolated static func mergeLocalPresentation(
+        into incoming: AppSnapshot,
+        current: AppSnapshot?
+    ) -> AppSnapshot {
         guard let current else { return incoming }
         var merged = incoming
         if (current.metadata.lastSuccessfulActionLabelSync ?? .distantPast)
@@ -508,7 +517,10 @@ final class AppModel: ObservableObject {
         let currentByPull = Dictionary(uniqueKeysWithValues: current.attentionItems.compactMap { item in
             item.pullRequestID.map { ($0, item) }
         })
-        merged.attentionItems = incoming.attentionItems.map { item in
+        // `merged` now contains the newest authoritative label facts. Mapping the
+        // original `incoming` rows here would undo the timestamp guard above when
+        // a slower general sync finishes after the dedicated label refresh.
+        merged.attentionItems = merged.attentionItems.map { item in
             guard item.kind == .actionLabels,
                   let pullRequestID = item.pullRequestID,
                   let old = currentByPull[pullRequestID] else { return item }
@@ -574,6 +586,25 @@ final class AppModel: ObservableObject {
     private func systemNotificationID(for item: AttentionItem, accountID: String) -> String {
         guard item.kind == .actionLabels, let pullRequestID = item.pullRequestID else { return item.notificationID }
         return ActionNotificationIdentifier.value(accountID: accountID, pullRequestID: pullRequestID)
+    }
+
+    private func markSystemNotificationSeen(_ identifier: String) {
+        guard var updated = snapshot,
+              let index = updated.attentionItems.firstIndex(where: {
+                  systemNotificationID(for: $0, accountID: updated.viewer.id) == identifier
+              }),
+              let revisionID = updated.attentionItems[index].revisionID else { return }
+        let mutation = updated.attentionItems[index].markingSeen(revision: revisionID, at: Date())
+        guard mutation.didMutate else { return }
+        updated.attentionItems[index] = mutation.item
+        do {
+            try SnapshotReconciler.requireValid(updated, actionConfiguration: actionConfiguration)
+            try snapshotStore?.save(updated)
+            snapshot = updated
+            notifications.remove(id: identifier)
+        } catch {
+            errorMessage = "Could not save notification state: \(error.localizedDescription)"
+        }
     }
 
     private func beginSync() -> UUID? {

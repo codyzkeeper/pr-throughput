@@ -2,6 +2,8 @@ import AppKit
 import Foundation
 import UserNotifications
 
+fileprivate typealias NotificationOpenHandler = @MainActor @Sendable (String) -> Void
+
 @MainActor
 final class LocalNotificationService {
     private let center = UNUserNotificationCenter.current()
@@ -9,6 +11,10 @@ final class LocalNotificationService {
 
     init() {
         center.delegate = delegate
+    }
+
+    func setOpenHandler(_ handler: @escaping @MainActor @Sendable (String) -> Void) {
+        delegate.setOpenHandler(handler)
     }
 
     func requestAuthorizationIfNeeded() async {
@@ -81,6 +87,13 @@ final class LocalNotificationService {
 }
 
 private final class NotificationCenterDelegate: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
+    private let handlerLock = NSLock()
+    private var openHandler: NotificationOpenHandler?
+
+    fileprivate func setOpenHandler(_ handler: @escaping NotificationOpenHandler) {
+        handlerLock.withLock { openHandler = handler }
+    }
+
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
@@ -92,6 +105,9 @@ private final class NotificationCenterDelegate: NSObject, UNUserNotificationCent
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
+        let identifier = response.notification.request.identifier
+        let handler = handlerLock.withLock { openHandler }
+        if let handler { await handler(identifier) }
         guard let value = response.notification.request.content.userInfo["url"] as? String,
               let url = URL(string: value) else { return }
         _ = await MainActor.run { NSWorkspace.shared.open(url) }

@@ -209,7 +209,7 @@ struct MenuPopoverView: View {
                 .accessibilityLabel("\(item.repository), pull request \(item.pullRequestNumber ?? 0), \(item.title)")
                 .accessibilityValue(item.applications.sorted { $0.ruleID.priority < $1.ruleID.priority }
                     .map(\.labelName).joined(separator: ", "))
-                .accessibilityHint("Opens the pull request and dismisses its current action labels")
+                .accessibilityHint("Opens the pull request and marks its notification seen")
                 .background {
                     GeometryReader { row in
                         Color.clear.preference(

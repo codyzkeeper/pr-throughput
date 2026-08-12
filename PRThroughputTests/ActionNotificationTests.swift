@@ -335,6 +335,30 @@ final class ActionNotificationTests: XCTestCase {
         XCTAssertEqual(result.metadata.lastSuccessfulActionLabelSync, refreshedAt)
     }
 
+    func testSlowerGeneralSyncCannotResurrectLabelRemovedByNewerActionSync() {
+        var staleIncoming = emptySnapshot(actionItems: [actionItem()])
+        staleIncoming.metadata.lastSuccessfulActionLabelSync = now
+        var current = emptySnapshot(actionItems: [])
+        current.metadata.lastSuccessfulActionLabelSync = now.addingTimeInterval(15)
+
+        let merged = AppModel.mergeLocalPresentation(into: staleIncoming, current: current)
+
+        XCTAssertTrue(merged.attentionItems.isEmpty)
+        XCTAssertEqual(merged.metadata.lastSuccessfulActionLabelSync, now.addingTimeInterval(15))
+    }
+
+    func testSlowerGeneralSyncCannotHideLabelAddedByNewerActionSync() {
+        var staleIncoming = emptySnapshot(actionItems: [])
+        staleIncoming.metadata.lastSuccessfulActionLabelSync = now
+        var current = emptySnapshot(actionItems: [actionItem()])
+        current.metadata.lastSuccessfulActionLabelSync = now.addingTimeInterval(15)
+
+        let merged = AppModel.mergeLocalPresentation(into: staleIncoming, current: current)
+
+        XCTAssertEqual(merged.attentionItems.map(\.id), ["action:PR_1"])
+        XCTAssertEqual(merged.metadata.lastSuccessfulActionLabelSync, now.addingTimeInterval(15))
+    }
+
     private func application(
         rule: ActionRuleID,
         event: String,

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.2 — 2026-08-11
+
+- Prevented a slower general refresh from overwriting newer GitHub action-label state or seen state from the 15-second notification refresh lane.
+- Added reconciliation gates immediately before every refreshed snapshot is saved and displayed.
+- Made opening a macOS notification mark that PR's notification seen while keeping its label-authoritative feed row visible.
+- Clarified VoiceOver guidance for action-label rows.
+
 ## 0.2.1 — 2026-08-11
 
 - Kept Needs attention rows visible until their configured GitHub label is removed or the pull request closes.
