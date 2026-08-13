@@ -159,7 +159,7 @@ struct WindowMetrics: Codable, Equatable, Sendable {
         guard openAtStart + new + reentered - merged - closed - drafted == openNow else {
             throw DecodingError.dataCorruptedError(
                 forKey: .openNow, in: values,
-                debugDescription: "Opening backlog plus entries minus exits must equal open now."
+                debugDescription: "Opening backlog plus entries minus exits must equal authored open."
             )
         }
         guard (medianOpenAge == nil) == (openNow == 0),

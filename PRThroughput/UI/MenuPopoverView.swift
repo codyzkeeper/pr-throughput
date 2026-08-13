@@ -132,7 +132,7 @@ struct MenuPopoverView: View {
                     }
 
                     HStack {
-                        Label("\(metrics.openNow) open now", systemImage: "hourglass")
+                        Label("\(metrics.openNow) authored open", systemImage: "hourglass")
                             .help("Authored, ready, non-draft PRs open at the verified closing boundary.")
                         Spacer()
                         Text("Median age now: \(metrics.medianOpenAge.map(duration) ?? "—")")
@@ -143,7 +143,7 @@ struct MenuPopoverView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
 
-                    ActivityChart(snapshot: model.snapshot, range: model.selectedRange, asOf: asOf)
+                    ActivityChart(snapshot: model.snapshot, metrics: metrics, range: model.selectedRange, asOf: asOf)
 
                     if let error = model.errorMessage {
                         Label(error, systemImage: "exclamationmark.triangle")
@@ -394,8 +394,8 @@ private struct BacklogFlowCard: View {
             MetricValue(label: "Merged", value: metrics.merged, help: "Active authored PRs merged during the window."),
             MetricValue(label: "Closed", value: metrics.closed, help: "Active authored PRs closed without merging during the window."),
             MetricValue(label: "Drafted", value: metrics.drafted, help: "Active authored PRs converted back to draft during the window."),
-            MetricValue(label: "Open now", value: metrics.openNow, help: "Authored, ready, non-draft PRs open at the verified closing boundary."),
-            MetricValue(label: "Net", value: metrics.netChange, help: "Open now minus open at start.")
+            MetricValue(label: "Authored open", value: metrics.openNow, help: "Authored, ready, non-draft PRs open at the verified closing boundary."),
+            MetricValue(label: "Net", value: metrics.netChange, help: "Authored open minus open at start.")
         ]
     }
 
@@ -409,7 +409,7 @@ private struct BacklogFlowCard: View {
                 Label("Balances", systemImage: "equal.circle.fill")
                     .font(.caption2)
                     .foregroundStyle(.blue)
-                    .help("Opening balance plus entries minus exits equals open now.")
+                    .help("Opening balance plus entries minus exits equals authored open.")
             }
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 0), count: 4), spacing: 8) {
                 ForEach(Array(values.enumerated()), id: \.offset) { _, item in
@@ -521,13 +521,14 @@ struct ActivityPoint: Identifiable, Equatable {
 
 private struct ActivityChart: View {
     let snapshot: AppSnapshot?
+    let metrics: WindowMetrics
     let range: WindowRange
     let asOf: Date
 
     var body: some View {
         let chartPoints = points
         VStack(alignment: .leading, spacing: 6) {
-            Text("New and merged by time")
+            Text("New, handoffs, and merged")
                 .font(.headline)
                 .lineLimit(1)
                 .help("Event activity during the selected window. The 48-hour view uses hourly buckets; longer views use daily buckets.")
@@ -540,12 +541,12 @@ private struct ActivityChart: View {
                         .foregroundStyle(by: .value("Series", point.series))
                 }
             }
-            .chartForegroundStyleScale(["New": Color.blue, "Merged": Color.purple])
+            .chartForegroundStyleScale(["New": Color.blue, "Handoffs": Color.orange, "Merged": Color.purple])
             .chartYAxis(.hidden)
             .chartLegend(position: .bottom, spacing: 10)
             .frame(height: 90)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Pull requests first entering ready work and merging during the selected window")
+            .accessibilityLabel("Pull requests first entering ready work, handed off, and merged during the selected window")
             .accessibilityValue(chartSummary(chartPoints))
         }
         .padding(12)
@@ -553,19 +554,21 @@ private struct ActivityChart: View {
     }
 
     private var points: [ActivityPoint] {
-        ActivitySeriesBuilder.points(snapshot: snapshot, range: range, asOf: asOf)
+        ActivitySeriesBuilder.points(snapshot: snapshot, metrics: metrics, range: range, asOf: asOf)
     }
 
     private func chartSummary(_ points: [ActivityPoint]) -> String {
         let opened = points.filter { $0.series == "New" }.reduce(0) { $0 + $1.count }
+        let handoffs = points.filter { $0.series == "Handoffs" }.reduce(0) { $0 + $1.count }
         let merged = points.filter { $0.series == "Merged" }.reduce(0) { $0 + $1.count }
-        return "\(opened) new and \(merged) merged in the \(range.rawValue) window."
+        return "\(opened) new, \(handoffs) handoffs, and \(merged) merged in the \(range.rawValue) window."
     }
 }
 
 enum ActivitySeriesBuilder {
     static func points(
         snapshot: AppSnapshot?,
+        metrics suppliedMetrics: WindowMetrics? = nil,
         range: WindowRange,
         asOf: Date,
         calendar: Calendar = .current
@@ -575,18 +578,29 @@ enum ActivitySeriesBuilder {
         let component: Calendar.Component = range == .hours48 ? .hour : .day
         guard let startBucket = calendar.dateInterval(of: component, for: start)?.start,
               let endBucket = calendar.dateInterval(of: component, for: asOf)?.start else { return [] }
-        var opened: [Date: Int] = [:]
+        var newlyReady: [Date: Int] = [:]
+        var handoffs: [Date: Int] = [:]
         var merged: [Date: Int] = [:]
-        let authored = snapshot.pullRequests.filter { $0.authorID == snapshot.viewer.id && $0.eligibleAt != nil }
-        for pull in authored {
-            if let eligible = pull.eligibleAt, eligible >= start, eligible <= asOf,
+        // Use the same canonical source-ID sets as the visible metrics. The chart
+        // owns only time bucketing; it must never independently redefine which
+        // facts belong to the selected window.
+        let metrics = suppliedMetrics ?? snapshot.windowMetrics(range: range, asOf: asOf)
+        let newIDs = Set(metrics.newIDs)
+        let mergedIDs = Set(metrics.mergedIDs)
+        let handoffIDs = Set(metrics.handoffIDs)
+        for pull in snapshot.pullRequests {
+            if newIDs.contains(pull.id), let eligible = pull.eligibleAt,
                let bucket = calendar.dateInterval(of: component, for: eligible)?.start {
-                opened[bucket, default: 0] += 1
+                newlyReady[bucket, default: 0] += 1
             }
-            if let eligibleAt = pull.eligibleAt, let mergedAt = pull.mergedAt,
-               mergedAt >= eligibleAt, mergedAt >= start, mergedAt <= asOf,
+            if mergedIDs.contains(pull.id), let mergedAt = pull.mergedAt,
                let bucket = calendar.dateInterval(of: component, for: mergedAt)?.start {
                 merged[bucket, default: 0] += 1
+            }
+        }
+        for handoff in snapshot.handoffs where handoffIDs.contains(handoff.id) {
+            if let bucket = calendar.dateInterval(of: component, for: handoff.at)?.start {
+                handoffs[bucket, default: 0] += 1
             }
         }
         var buckets: [Date] = []
@@ -596,8 +610,9 @@ enum ActivitySeriesBuilder {
             guard let next = calendar.date(byAdding: component, value: 1, to: bucket), next > bucket else { break }
             bucket = next
         }
-        let openedPoints = buckets.map { ActivityPoint(date: $0, count: opened[$0, default: 0], series: "New") }
+        let openedPoints = buckets.map { ActivityPoint(date: $0, count: newlyReady[$0, default: 0], series: "New") }
+        let handoffPoints = buckets.map { ActivityPoint(date: $0, count: handoffs[$0, default: 0], series: "Handoffs") }
         let mergedPoints = buckets.map { ActivityPoint(date: $0, count: merged[$0, default: 0], series: "Merged") }
-        return openedPoints + mergedPoints
+        return openedPoints + handoffPoints + mergedPoints
     }
 }
