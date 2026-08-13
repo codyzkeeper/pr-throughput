@@ -136,7 +136,7 @@ enum SnapshotReconciler {
         let expectedEnd = metrics.openAtStart + metrics.new + metrics.reentered
             - metrics.merged - metrics.closed - metrics.drafted
         if expectedEnd != metrics.openNow {
-            issues.append("\(label): opening backlog plus entries minus exits does not equal open now.")
+            issues.append("\(label): opening backlog plus entries minus exits does not equal authored open.")
         }
         if metrics.netChange != metrics.openNow - metrics.openAtStart {
             issues.append("\(label): net backlog change does not match its boundaries.")
@@ -155,7 +155,7 @@ enum SnapshotReconciler {
             issues.append("\(label): acceptance + rework does not equal 100%.")
         }
         if (metrics.openNow == 0) != (metrics.medianOpenAge == nil) {
-            issues.append("\(label): median open age does not reconcile with open now.")
+            issues.append("\(label): median open age does not reconcile with authored open.")
         }
         if (metrics.merged == 0) != (metrics.medianTimeToMerge == nil) {
             issues.append("\(label): median merge time does not reconcile with window merges.")
