@@ -95,7 +95,7 @@ For repeatable visual regression checks without reading Keychain or contacting G
 ## Metric definitions
 
 - A PR enters active authored work when it first opens as non-draft or is first marked ready for review. Draft and closed PRs are outside the active backlog.
-- Open at start is the active authored backlog immediately before the selected window. New and re-entered transitions add work; merge, close, and draft transitions remove work; the result must equal open now.
+- Open at start is the active authored backlog immediately before the selected window. New and re-entered transitions add work; merge, close, and draft transitions remove work; the result must equal authored open at the closing boundary.
 - All event counts use the exact selected rolling window and one verified full-sync closing timestamp.
 - A handoff requires the authenticated user to be unassigned, a named person to be assigned, and that person to be requested for review within a five-minute span.
 - Handoff activity counts cycles, so repeated handoffs of one PR count separately. Withdrawn cycles do not count.

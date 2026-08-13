@@ -10,21 +10,29 @@ final class ActivitySeriesTests: XCTestCase {
         let firstEligible = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 30, hour: 15)))
         let secondEligible = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 8, day: 1, hour: 10)))
         let mergedAt = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 8, day: 2, hour: 8)))
+        let handedOffAt = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 8, day: 1, hour: 11)))
         let pulls = [
             PullRequestSnapshot(id: "one", repository: "o/r", number: 1, title: "One", url: URL(string: "https://github.com/o/r/pull/1")!, authorID: viewer.id, eligibleAt: firstEligible, isDraft: false, state: .merged, mergedAt: mergedAt),
             PullRequestSnapshot(id: "two", repository: "o/r", number: 2, title: "Two", url: URL(string: "https://github.com/o/r/pull/2")!, authorID: viewer.id, eligibleAt: secondEligible, isDraft: false, state: .open)
         ]
-        let snapshot = AppSnapshot(viewer: viewer, pullRequests: pulls, events: [], handoffs: [], assignedPullRequestIDs: [], attentionItems: [], metadata: .empty)
+        let handoffs = [
+            Handoff(id: "handoff", pullRequestID: "two", reviewerID: "reviewer", at: handedOffAt, outcome: .pending)
+        ]
+        let snapshot = AppSnapshot(viewer: viewer, pullRequests: pulls, events: [], handoffs: handoffs, assignedPullRequestIDs: [], attentionItems: [], metadata: .empty)
 
         let points = ActivitySeriesBuilder.points(snapshot: snapshot, range: .days7, asOf: asOf, calendar: calendar)
         let opened = points.filter { $0.series == "New" }
+        let handoffsSeries = points.filter { $0.series == "Handoffs" }
         let merged = points.filter { $0.series == "Merged" }
 
         XCTAssertEqual(opened.count, 8)
+        XCTAssertEqual(handoffsSeries.count, 8)
         XCTAssertEqual(merged.count, 8)
         XCTAssertEqual(opened.map(\.date), opened.map(\.date).sorted())
+        XCTAssertEqual(handoffsSeries.map(\.date), handoffsSeries.map(\.date).sorted())
         XCTAssertEqual(merged.map(\.date), merged.map(\.date).sorted())
         XCTAssertEqual(opened.reduce(0) { $0 + $1.count }, 2)
+        XCTAssertEqual(handoffsSeries.reduce(0) { $0 + $1.count }, 1)
         XCTAssertEqual(merged.reduce(0) { $0 + $1.count }, 1)
     }
 
@@ -83,5 +91,35 @@ final class ActivitySeriesTests: XCTestCase {
 
         XCTAssertEqual(opened.count, 49)
         XCTAssertTrue(opened.allSatisfy { calendar.component(.minute, from: $0.date) == 0 })
+    }
+
+    func testHandoffSeriesUsesTheSameNonWithdrawnWindowDefinitionAsMetrics() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let asOf = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 8, day: 5, hour: 12)))
+        let viewer = GitHubUser(id: "viewer", login: "me", kind: .user)
+        let pull = PullRequestSnapshot(
+            id: "pull", repository: "o/r", number: 1, title: "Pull",
+            url: URL(string: "https://github.com/o/r/pull/1")!, authorID: viewer.id,
+            eligibleAt: asOf.addingTimeInterval(-10 * 86_400), isDraft: false, state: .open
+        )
+        let handoffs = [
+            Handoff(id: "included", pullRequestID: pull.id, reviewerID: "alice",
+                    at: asOf.addingTimeInterval(-3_600), outcome: .pending),
+            Handoff(id: "withdrawn", pullRequestID: pull.id, reviewerID: "bob",
+                    at: asOf.addingTimeInterval(-2_000),
+                    outcome: .withdrawn(at: asOf.addingTimeInterval(-1_000), reason: "removed")),
+            Handoff(id: "outside", pullRequestID: pull.id, reviewerID: "carol",
+                    at: asOf.addingTimeInterval(-8 * 86_400), outcome: .pending)
+        ]
+        let snapshot = AppSnapshot(
+            viewer: viewer, pullRequests: [pull], events: [], handoffs: handoffs,
+            assignedPullRequestIDs: [], attentionItems: [], metadata: .empty
+        )
+
+        let points = ActivitySeriesBuilder.points(snapshot: snapshot, range: .days7, asOf: asOf, calendar: calendar)
+
+        XCTAssertEqual(points.filter { $0.series == "Handoffs" }.reduce(0) { $0 + $1.count }, 1)
+        XCTAssertEqual(snapshot.windowMetrics(range: .days7, asOf: asOf).handoffs, 1)
     }
 }

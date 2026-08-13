@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1 — 2026-08-13
+
+- Clarified that the closing backlog is authored open work, distinct from the assigned-to-you menu-bar total.
+- Added handoff cycles to the activity chart using the same selected-window and non-withdrawn definition as the Handoffs metric.
+
 ## 0.3.0 — 2026-08-12
 
 - Replaced opening-cohort metrics with one exact rolling-window backlog ledger.
