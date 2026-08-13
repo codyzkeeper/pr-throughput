@@ -131,6 +131,46 @@ struct WindowMetrics: Codable, Equatable, Sendable {
             try values.decodeIfPresent(Double.self, forKey: .reworkRate),
             expected: reworkRate, key: .reworkRate, in: values
         )
+        let factCollections: [(CodingKeys, [String])] = [
+            (.openAtStartIDs, openAtStartIDs), (.newIDs, newIDs), (.mergedIDs, mergedIDs),
+            (.openAtEndIDs, openAtEndIDs), (.handoffIDs, handoffIDs),
+            (.awaitingHandoffIDs, awaitingHandoffIDs)
+        ]
+        for (key, ids) in factCollections where Set(ids).count != ids.count {
+            throw DecodingError.dataCorruptedError(
+                forKey: key, in: values, debugDescription: "Source fact IDs must be unique."
+            )
+        }
+        let transitionIDs = reenteredTransitions.map(\.id) + closedTransitions.map(\.id)
+            + draftedTransitions.map(\.id)
+        guard Set(transitionIDs).count == transitionIDs.count else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .reenteredTransitions, in: values,
+                debugDescription: "Lifecycle transition IDs must be unique across the ledger."
+            )
+        }
+        let reviewIDs = approvalEventIDs + changesRequestedEventIDs
+        guard Set(reviewIDs).count == reviewIDs.count else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .approvalEventIDs, in: values,
+                debugDescription: "Review decision IDs must be unique across outcomes."
+            )
+        }
+        guard openAtStart + new + reentered - merged - closed - drafted == openNow else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .openNow, in: values,
+                debugDescription: "Opening backlog plus entries minus exits must equal open now."
+            )
+        }
+        guard (medianOpenAge == nil) == (openNow == 0),
+              (medianTimeToMerge == nil) == (merged == 0),
+              medianOpenAge.map({ $0.isFinite && $0 >= 0 }) ?? true,
+              medianTimeToMerge.map({ $0.isFinite && $0 >= 0 }) ?? true else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .medianOpenAge, in: values,
+                debugDescription: "Median availability must reconcile with its source population."
+            )
+        }
     }
 
     func encode(to encoder: Encoder) throws {
@@ -285,15 +325,15 @@ struct WindowMetrics: Codable, Equatable, Sendable {
         )
     }
 
-    private enum LifecycleKind: Int, Equatable {
-        // Merge precedes its companion close event at an identical timestamp.
-        case merged = 0, drafted = 1, closed = 2, firstReady = 3, ready = 4, reopened = 5
+    private enum LifecycleKind: Equatable {
+        case merged, drafted, closed, firstReady, ready, reopened
     }
 
     private struct LifecycleTransition {
         let id: String
         let at: Date
         let kind: LifecycleKind
+        let sourceOrder: Int
     }
 
     private struct LifecycleState {
@@ -321,7 +361,9 @@ struct WindowMetrics: Codable, Equatable, Sendable {
         eligibleAt: Date,
         asOf: Date
     ) -> [LifecycleTransition] {
-        var result = [LifecycleTransition(id: "eligible:\(pull.id)", at: eligibleAt, kind: .firstReady)]
+        var result = [LifecycleTransition(
+            id: "eligible:\(pull.id)", at: eligibleAt, kind: .firstReady, sourceOrder: .min
+        )]
         for event in events where event.at <= asOf {
             let kind: LifecycleKind?
             switch event.kind {
@@ -332,24 +374,37 @@ struct WindowMetrics: Codable, Equatable, Sendable {
             case .closed: kind = .closed
             default: kind = nil
             }
-            if let kind { result.append(LifecycleTransition(id: event.id, at: event.at, kind: kind)) }
+            if let kind {
+                result.append(LifecycleTransition(
+                    id: event.id, at: event.at, kind: kind, sourceOrder: event.sourceOrder
+                ))
+            }
         }
         if let mergedAt = pull.mergedAt, mergedAt <= asOf {
             if !result.contains(where: { $0.kind == .merged && $0.at == mergedAt }) {
-                result.append(LifecycleTransition(id: "merged:\(pull.id)", at: mergedAt, kind: .merged))
+                result.append(LifecycleTransition(
+                    id: "merged:\(pull.id)", at: mergedAt, kind: .merged, sourceOrder: .max - 1
+                ))
             }
         } else if let closedAt = pull.closedAt, closedAt <= asOf {
             if !result.contains(where: { $0.kind == .closed && $0.at == closedAt }) {
                 result.append(LifecycleTransition(
                     id: "closed:\(pull.id):\(closedAt.timeIntervalSinceReferenceDate)",
                     at: closedAt,
-                    kind: .closed
+                    kind: .closed,
+                    sourceOrder: .max
                 ))
             }
         }
         return result.sorted {
             if $0.at != $1.at { return $0.at < $1.at }
-            if $0.kind.rawValue != $1.kind.rawValue { return $0.kind.rawValue < $1.kind.rawValue }
+            if $0.kind == .firstReady, $1.kind != .firstReady { return true }
+            if $1.kind == .firstReady, $0.kind != .firstReady { return false }
+            // GitHub emits both terminal facts for a merge. Count the merge once,
+            // even if the two nodes share the same second.
+            if $0.kind == .merged, $1.kind == .closed { return true }
+            if $0.kind == .closed, $1.kind == .merged { return false }
+            if $0.sourceOrder != $1.sourceOrder { return $0.sourceOrder < $1.sourceOrder }
             return $0.id < $1.id
         }
     }

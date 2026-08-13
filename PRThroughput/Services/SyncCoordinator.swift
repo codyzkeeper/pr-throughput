@@ -14,6 +14,53 @@ actor SyncCoordinator {
         self.api = api
     }
 
+    /// Recent timeline queries return a suffix whose positions restart at zero.
+    /// Rebase that suffix against any overlapping cached event before replacing it,
+    /// so equal-timestamp ordering remains stable between full and fast refreshes.
+    nonisolated static func mergingTimelineUpdates(
+        previous: [TimelineEvent],
+        updates: [RecentPullRequestUpdate]
+    ) -> [TimelineEvent] {
+        var merged = Dictionary(previous.map { ($0.id, $0) }, uniquingKeysWith: { old, _ in old })
+        let previousByID = merged
+        let previousByPull = Dictionary(grouping: previous, by: \.pullRequestID)
+        for update in updates {
+            // A dismissed review is represented at the dismissal node while
+            // retaining the original review ID/time. Prefer structural timeline
+            // nodes as overlap anchors because their positions never migrate.
+            let stableOffsets = update.events.compactMap { event -> Int? in
+                guard case .reviewed = event.kind else {
+                    return previousByID[event.id].map { $0.sourceOrder - event.sourceOrder }
+                }
+                return nil
+            }
+            let anyOffsets = update.events.compactMap { event in
+                previousByID[event.id].map { $0.sourceOrder - event.sourceOrder }
+            }
+            let offset = stableOffsets.first ?? anyOffsets.first
+                ?? ((previousByPull[update.id]?.map(\.sourceOrder).max() ?? -1) + 1)
+            for event in update.events {
+                merged[event.id] = TimelineEvent(
+                    id: event.id,
+                    pullRequestID: event.pullRequestID,
+                    kind: event.kind,
+                    at: event.at,
+                    sourceOrder: event.sourceOrder + offset
+                )
+            }
+        }
+        return sortedTimelineEvents(Array(merged.values))
+    }
+
+    nonisolated static func sortedTimelineEvents(_ events: [TimelineEvent]) -> [TimelineEvent] {
+        events.sorted { lhs, rhs in
+            if lhs.at != rhs.at { return lhs.at < rhs.at }
+            if lhs.pullRequestID != rhs.pullRequestID { return lhs.pullRequestID < rhs.pullRequestID }
+            if lhs.sourceOrder != rhs.sourceOrder { return lhs.sourceOrder < rhs.sourceOrder }
+            return lhs.id < rhs.id
+        }
+    }
+
     func refresh(
         previous: AppSnapshot?,
         configuration: ActionNotificationConfiguration = .load(),
@@ -81,7 +128,9 @@ actor SyncCoordinator {
         var snapshot = AppSnapshot(
             viewer: viewer,
             pullRequests: pulls,
-            events: Dictionary(allEvents.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }).values.sorted { $0.at < $1.at },
+            events: Self.sortedTimelineEvents(Dictionary(
+                allEvents.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }
+            ).map(\.value)),
             handoffs: resolvedHandoffs,
             assignedPullRequestIDs: Set(assignedNodes.filter { !$0.isDraft }.map(\.id)),
             attentionItems: previous?.attentionItems.filter { $0.kind == .actionLabels } ?? [],
@@ -145,10 +194,7 @@ actor SyncCoordinator {
             }
         }
 
-        let refreshedEvents = recentUpdates.flatMap(\.events)
-        var allEvents = previous.events + refreshedEvents
-        allEvents = Dictionary(allEvents.map { ($0.id, $0) }, uniquingKeysWith: { _, refreshed in refreshed })
-            .values.sorted { $0.at < $1.at }
+        let allEvents = Self.mergingTimelineUpdates(previous: previous.events, updates: recentUpdates)
 
         let handoffs = HandoffResolver.resolve(
             handoffs: HandoffMatcher.match(events: allEvents, viewerID: previous.viewer.id),

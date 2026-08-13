@@ -8,6 +8,9 @@
 - Added reopen events and complete paginated discovery of old authored PRs that remain open.
 - Anchored every dashboard metric to one verified full-sync timestamp and advanced the canonical metric contract to v4.
 - Invalidated pre-v0.3 timeline caches so the new ledger cannot be marked reconciled without authoritative reopen history.
+- Preserved GitHub timeline order when lifecycle events share a timestamp, including fast suffix refreshes.
+- Replaced provisional first-sync zeroes with an explicit verification state in both the popover and menu bar.
+- Hardened canonical decoding against duplicate facts, unbalanced ledgers, and invalid median availability.
 
 ## 0.2.2 — 2026-08-11
 

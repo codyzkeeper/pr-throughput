@@ -1,6 +1,19 @@
 import Charts
 import SwiftUI
 
+enum MenuPresentationState: Equatable {
+    case onboarding
+    case initialSync
+    case dashboard
+
+    static func resolve(connectionState: AppModel.ConnectionState, hasSnapshot: Bool) -> Self {
+        switch connectionState {
+        case .disconnected, .authorizing: .onboarding
+        case .connected: hasSnapshot ? .dashboard : .initialSync
+        }
+    }
+}
+
 struct MenuPopoverView: View {
     @ObservedObject var model: AppModel
     @State private var attentionFrames: [String: CGRect] = [:]
@@ -10,15 +23,58 @@ struct MenuPopoverView: View {
 
     var body: some View {
         Group {
-            switch model.connectionState {
-            case .disconnected, .authorizing:
+            switch MenuPresentationState.resolve(
+                connectionState: model.connectionState,
+                hasSnapshot: model.snapshot != nil
+            ) {
+            case .onboarding:
                 OnboardingView(model: model)
-            case .connected:
+            case .initialSync:
+                initialSync
+            case .dashboard:
                 dashboard
             }
         }
         .frame(width: 390)
         .task { await model.start() }
+    }
+
+    private var initialSync: some View {
+        VStack(spacing: 0) {
+            VStack(spacing: 12) {
+                if model.isSyncing {
+                    ProgressView()
+                        .controlSize(.regular)
+                } else if model.errorMessage != nil {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+                Text(initialSyncTitle)
+                    .font(.headline)
+                Text("Verified totals will appear after reconciliation completes. The first sync can take a few minutes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 300)
+                if let error = model.errorMessage {
+                    Label(error, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .frame(maxWidth: 330, alignment: .leading)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(20)
+            Divider()
+            footer
+        }
+        .frame(height: 300)
+    }
+
+    private var initialSyncTitle: String {
+        if model.isSyncing { return "Syncing GitHub history…" }
+        if model.errorMessage != nil { return "Unable to verify totals" }
+        return "Preparing first sync…"
     }
 
     private var dashboard: some View {
@@ -350,7 +406,7 @@ private struct BacklogFlowCard: View {
                     .font(.headline)
                     .lineLimit(1)
                 Spacer()
-                Label("Reconciled", systemImage: "equal.circle.fill")
+                Label("Balances", systemImage: "equal.circle.fill")
                     .font(.caption2)
                     .foregroundStyle(.blue)
                     .help("Opening balance plus entries minus exits equals open now.")

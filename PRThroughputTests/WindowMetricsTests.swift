@@ -63,6 +63,40 @@ final class WindowMetricsTests: XCTestCase {
         XCTAssertEqual(metrics.openNow, 0)
     }
 
+    func testSameInstantReadyThenDraftPreservesSourceOrder() {
+        let start = now.addingTimeInterval(-WindowRange.hours48.duration)
+        let at = start.addingTimeInterval(100)
+        let pull = pull("same-instant-draft", eligible: at, isDraft: true, state: .open)
+        let events = [
+            event("ready", pull.id, .readyForReview, at, sourceOrder: 10),
+            event("draft", pull.id, .convertedToDraft, at, sourceOrder: 11)
+        ]
+
+        let metrics = snapshot(pulls: [pull], events: events).windowMetrics(range: .hours48, asOf: now)
+
+        XCTAssertEqual(metrics.new, 1)
+        XCTAssertEqual(metrics.drafted, 1)
+        XCTAssertEqual(metrics.openNow, 0)
+    }
+
+    func testSameInstantReopenThenClosePreservesSourceOrder() {
+        let start = now.addingTimeInterval(-WindowRange.hours48.duration)
+        let at = start.addingTimeInterval(100)
+        let pull = pull("same-instant-close", eligible: start.addingTimeInterval(-1_000), state: .closed,
+                        closedAt: at)
+        let events = [
+            event("old-close", pull.id, .closed, start.addingTimeInterval(-500), sourceOrder: 1),
+            event("reopen", pull.id, .reopened, at, sourceOrder: 10),
+            event("close", pull.id, .closed, at, sourceOrder: 11)
+        ]
+
+        let metrics = snapshot(pulls: [pull], events: events).windowMetrics(range: .hours48, asOf: now)
+
+        XCTAssertEqual(metrics.reentered, 1)
+        XCTAssertEqual(metrics.closed, 1)
+        XCTAssertEqual(metrics.openNow, 0)
+    }
+
     func testReviewAcceptanceUsesOnlyDecisionEventsInWindow() {
         let start = now.addingTimeInterval(-WindowRange.days7.duration)
         let reviewer = GitHubUser(id: "reviewer", login: "reviewer", kind: .user)
@@ -132,6 +166,34 @@ final class WindowMetricsTests: XCTestCase {
         XCTAssertThrowsError(try decoder.decode(WindowMetrics.self, from: tampered))
     }
 
+    func testCanonicalDecodingRejectsDuplicateSourceFactsEvenWhenCountMatches() throws {
+        let metrics = WindowMetrics.empty(range: .days7, asOf: now)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(metrics)) as? [String: Any])
+        object["handoffIDs"] = ["duplicate", "duplicate"]
+        object["handoffs"] = 2
+        let tampered = try JSONSerialization.data(withJSONObject: object)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        XCTAssertThrowsError(try decoder.decode(WindowMetrics.self, from: tampered))
+    }
+
+    func testCanonicalDecodingRejectsUnbalancedLedgerEvenWhenCountsMatchFacts() throws {
+        let metrics = WindowMetrics.empty(range: .days7, asOf: now)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(metrics)) as? [String: Any])
+        object["newIDs"] = ["new"]
+        object["new"] = 1
+        let tampered = try JSONSerialization.data(withJSONObject: object)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        XCTAssertThrowsError(try decoder.decode(WindowMetrics.self, from: tampered))
+    }
+
     func testAwaitingNowIncludesOldPendingButHandoffsRemainWindowScoped() {
         let start = now.addingTimeInterval(-WindowRange.days7.duration)
         let pull = pull("old", eligible: start.addingTimeInterval(-10_000), state: .open)
@@ -176,7 +238,13 @@ final class WindowMetricsTests: XCTestCase {
         )
     }
 
-    private func event(_ id: String, _ pull: String, _ kind: TimelineEventKind, _ at: Date) -> TimelineEvent {
-        TimelineEvent(id: id, pullRequestID: pull, kind: kind, at: at)
+    private func event(
+        _ id: String,
+        _ pull: String,
+        _ kind: TimelineEventKind,
+        _ at: Date,
+        sourceOrder: Int = 0
+    ) -> TimelineEvent {
+        TimelineEvent(id: id, pullRequestID: pull, kind: kind, at: at, sourceOrder: sourceOrder)
     }
 }

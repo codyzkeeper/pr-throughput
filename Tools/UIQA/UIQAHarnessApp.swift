@@ -19,7 +19,15 @@ struct UIQAHarnessApp: App {
         try? actionConfiguration.save()
         let model = AppModel()
         model.connectionState = .connected
-        model.snapshot = Self.fixture(configurationRevision: actionConfiguration.revision)
+#if UIQA_INITIAL_SYNC
+        model.isSyncing = true
+#else
+        if CommandLine.arguments.contains("--initial-sync") {
+            model.isSyncing = true
+        } else {
+            model.snapshot = Self.fixture(configurationRevision: actionConfiguration.revision)
+        }
+#endif
         model.setPopoverPresented(true)
         _model = StateObject(wrappedValue: model)
     }

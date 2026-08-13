@@ -375,6 +375,22 @@ final class GitHubAPITests: XCTestCase {
         guard case .reopened = timeline[0].kind else { return XCTFail("Expected reopen event") }
     }
 
+    func testTimelinePreservesConnectionOrderAtIdenticalTimestamps() async throws {
+        StubURLProtocol.handler = { request in
+            let timestamp = "2026-08-02T14:00:00Z"
+            let payload = #"{"data":{"node":{"timelineItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"__typename":"ReadyForReviewEvent","id":"ready","createdAt":"\#(timestamp)"},{"__typename":"ConvertToDraftEvent","id":"draft","createdAt":"\#(timestamp)"}]}}}}"#
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(payload.utf8))
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let api = GitHubAPI(token: "test", session: URLSession(configuration: configuration))
+
+        let timeline = try await api.timeline(pullRequestID: "pr")
+
+        XCTAssertEqual(timeline.map(\.id), ["ready", "draft"])
+        XCTAssertEqual(timeline.map(\.sourceOrder), [0, 1])
+    }
+
     func testAuthoredOpenPullRequestsPaginatesWithoutSearch() async throws {
         var requestCount = 0
         StubURLProtocol.handler = { request in
