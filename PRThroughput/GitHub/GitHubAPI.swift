@@ -87,6 +87,34 @@ actor GitHubAPI {
         return nodes
     }
 
+    /// Uses the viewer connection rather than search so old, still-open PRs are
+    /// not omitted by the search API's 1,000-result ceiling or time slicing.
+    func authoredOpenPullRequests() async throws -> [GitHubPullRequestNode] {
+        var cursor: String?
+        var seenCursors = Set<String>()
+        var nodes: [GitHubPullRequestNode] = []
+        repeat {
+            var variables: [String: Any] = [:]
+            if let cursor { variables["cursor"] = cursor }
+            let envelope: ViewerPullRequestsEnvelope = try await graphQL(
+                query: Self.viewerOpenPullRequestsQuery,
+                variables: variables
+            )
+            let page = envelope.data.viewer.pullRequests
+            nodes.append(contentsOf: page.nodes)
+            if page.pageInfo.hasNextPage {
+                guard let next = page.pageInfo.endCursor,
+                      seenCursors.insert(next).inserted else { throw GitHubAPIError.invalidResponse }
+                cursor = next
+            } else {
+                cursor = nil
+            }
+        } while cursor != nil
+        return Dictionary(nodes.map { ($0.id, $0) }, uniquingKeysWith: { old, new in
+            old.updatedAt >= new.updatedAt ? old : new
+        }).map(\.value)
+    }
+
     func actionPullRequests(
         configuration: ActionNotificationConfiguration,
         candidateIDs: Set<String>,
@@ -588,11 +616,26 @@ actor GitHubAPI {
     }
     """#
 
+    private static let viewerOpenPullRequestsQuery = #"""
+    query ViewerOpenPullRequests($cursor: String) {
+      viewer {
+        pullRequests(first: 100, after: $cursor, states: [OPEN], orderBy: {field: UPDATED_AT, direction: DESC}) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            id number title url createdAt updatedAt isDraft state mergedAt closedAt
+            author { __typename login ... on User { id } }
+            repository { nameWithOwner }
+          }
+        }
+      }
+    }
+    """#
+
     private static let timelineQuery = #"""
     query PullRequestTimeline($id: ID!, $cursor: String) {
       node(id: $id) {
         ... on PullRequest {
-          timelineItems(first: 100, after: $cursor, itemTypes: [ASSIGNED_EVENT, UNASSIGNED_EVENT, REVIEW_REQUESTED_EVENT, REVIEW_REQUEST_REMOVED_EVENT, REVIEW_DISMISSED_EVENT, PULL_REQUEST_REVIEW, READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT, MERGED_EVENT, CLOSED_EVENT]) {
+          timelineItems(first: 100, after: $cursor, itemTypes: [ASSIGNED_EVENT, UNASSIGNED_EVENT, REVIEW_REQUESTED_EVENT, REVIEW_REQUEST_REMOVED_EVENT, REVIEW_DISMISSED_EVENT, PULL_REQUEST_REVIEW, READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT, REOPENED_EVENT, MERGED_EVENT, CLOSED_EVENT]) {
             pageInfo { hasNextPage endCursor }
             nodes {
               __typename
@@ -607,6 +650,7 @@ actor GitHubAPI {
               }
               ... on ReadyForReviewEvent { id createdAt }
               ... on ConvertToDraftEvent { id createdAt }
+              ... on ReopenedEvent { id createdAt }
               ... on MergedEvent { id createdAt }
               ... on ClosedEvent { id createdAt }
             }
@@ -621,7 +665,7 @@ actor GitHubAPI {
       node(id: $id) {
         ... on PullRequest {
           updatedAt isDraft state mergedAt closedAt
-          timelineItems(last: 100, itemTypes: [ASSIGNED_EVENT, UNASSIGNED_EVENT, REVIEW_REQUESTED_EVENT, REVIEW_REQUEST_REMOVED_EVENT, REVIEW_DISMISSED_EVENT, PULL_REQUEST_REVIEW, READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT, MERGED_EVENT, CLOSED_EVENT]) {
+          timelineItems(last: 100, itemTypes: [ASSIGNED_EVENT, UNASSIGNED_EVENT, REVIEW_REQUESTED_EVENT, REVIEW_REQUEST_REMOVED_EVENT, REVIEW_DISMISSED_EVENT, PULL_REQUEST_REVIEW, READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT, REOPENED_EVENT, MERGED_EVENT, CLOSED_EVENT]) {
             pageInfo { hasNextPage endCursor }
             nodes {
               __typename
@@ -636,6 +680,7 @@ actor GitHubAPI {
               }
               ... on ReadyForReviewEvent { id createdAt }
               ... on ConvertToDraftEvent { id createdAt }
+              ... on ReopenedEvent { id createdAt }
               ... on MergedEvent { id createdAt }
               ... on ClosedEvent { id createdAt }
             }
@@ -729,6 +774,13 @@ private struct SearchEnvelope: Decodable {
         let pullRequest: GitHubPullRequestNode?
         init(from decoder: Decoder) throws { pullRequest = try? GitHubPullRequestNode(from: decoder) }
     }
+}
+
+private struct ViewerPullRequestsEnvelope: Decodable {
+    let data: DataBody
+    struct DataBody: Decodable { let viewer: Viewer }
+    struct Viewer: Decodable { let pullRequests: PullRequests }
+    struct PullRequests: Decodable { let pageInfo: PageInfo; let nodes: [GitHubPullRequestNode] }
 }
 
 private struct TimelineEnvelope: Decodable {
@@ -916,6 +968,7 @@ private struct GitHubTimelineNode: Decodable {
             )
         case "ReadyForReviewEvent": kind = .readyForReview
         case "ConvertToDraftEvent": kind = .convertedToDraft
+        case "ReopenedEvent": kind = .reopened
         case "MergedEvent": kind = .merged
         case "ClosedEvent": kind = .closed
         default: kind = nil

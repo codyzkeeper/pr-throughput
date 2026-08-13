@@ -22,7 +22,13 @@ actor SyncCoordinator {
         let now = Date()
         let viewer = try await api.viewer()
         let since = now.addingTimeInterval(-30 * 24 * 3_600)
-        let authoredNodes = try await discoverAuthored(login: viewer.login, from: since, through: now)
+        async let recentAuthored = discoverAuthored(login: viewer.login, from: since, through: now)
+        async let openAuthored = api.authoredOpenPullRequests()
+        let discovered = try await recentAuthored
+            + openAuthored.filter { $0.author?.user?.id == viewer.id }
+        let authoredNodes = Dictionary(discovered.map { ($0.id, $0) }, uniquingKeysWith: { old, new in
+            old.updatedAt >= new.updatedAt ? old : new
+        }).map(\.value).sorted { $0.createdAt < $1.createdAt }
         let assignedNodes = try await api.searchPullRequests(query: "is:pr is:open assignee:\(viewer.login) draft:false")
 
         let previousEventsByPull = Dictionary(grouping: previous?.events ?? [], by: \.pullRequestID)

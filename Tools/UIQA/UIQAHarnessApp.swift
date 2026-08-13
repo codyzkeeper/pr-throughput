@@ -68,7 +68,9 @@ struct UIQAHarnessApp: App {
                           at: now.addingTimeInterval(-12 * 3_600)),
             TimelineEvent(id: "review-2", pullRequestID: "pr-2",
                           kind: .reviewed(reviewer: reviewerB, state: .changesRequested),
-                          at: now.addingTimeInterval(-23 * 3_600))
+                          at: now.addingTimeInterval(-23 * 3_600)),
+            TimelineEvent(id: "draft-4", pullRequestID: "pr-4", kind: .convertedToDraft,
+                          at: now.addingTimeInterval(-24 * 3_600))
         ]
         return AppSnapshot(
             viewer: viewer,

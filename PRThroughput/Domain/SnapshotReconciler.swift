@@ -21,6 +21,9 @@ enum SnapshotReconciler {
         actionConfiguration: ActionNotificationConfiguration? = nil
     ) -> ReconciliationReport {
         var issues: [String] = []
+        if snapshot.metadata.timelineSchemaVersion != TimelineEvent.sourceSchemaVersion {
+            issues.append("Timeline cache schema is stale and must be refreshed before window metrics can be verified.")
+        }
         let configuredRules = actionConfiguration.flatMap { try? $0.validated() }.map {
             Dictionary(uniqueKeysWithValues: $0.enabledRules.map { ($0.id, $0.labelName.lowercased()) })
         }
@@ -114,29 +117,55 @@ enum SnapshotReconciler {
             issues.append("Stored handoffs do not match the timeline-derived handoffs.")
         }
 
-        for range in CohortRange.allCases {
-            validate(
-                snapshot.activity(range: range, asOf: asOf),
-                range: range,
-                issues: &issues
-            )
-            validate(
-                snapshot.metrics(range: range, asOf: asOf),
-                range: range,
-                issues: &issues
-            )
+        for range in WindowRange.allCases {
+            validate(snapshot.windowMetrics(range: range, asOf: asOf), range: range, issues: &issues)
+        }
+        let expectedOpenNow = Set(snapshot.pullRequests.lazy.filter {
+            $0.authorID == snapshot.viewer.id && $0.eligibleAt != nil
+                && $0.state == .open && !$0.isDraft
+        }.map(\.id))
+        let reducedOpenNow = Set(snapshot.windowMetrics(range: .days30, asOf: asOf).openAtEndIDs)
+        if expectedOpenNow != reducedOpenNow {
+            issues.append("Lifecycle reducer closing state does not match GitHub's current authored backlog.")
         }
         return ReconciliationReport(issues: issues)
     }
 
-    private static func validate(_ activity: WindowActivityMetrics, range: CohortRange, issues: inout [String]) {
+    private static func validate(_ metrics: WindowMetrics, range: WindowRange, issues: inout [String]) {
         let label = range.rawValue
-        if activity.decisions != activity.approved + activity.changesRequested {
+        let expectedEnd = metrics.openAtStart + metrics.new + metrics.reentered
+            - metrics.merged - metrics.closed - metrics.drafted
+        if expectedEnd != metrics.openNow {
+            issues.append("\(label): opening backlog plus entries minus exits does not equal open now.")
+        }
+        if metrics.netChange != metrics.openNow - metrics.openAtStart {
+            issues.append("\(label): net backlog change does not match its boundaries.")
+        }
+        if metrics.decisions != metrics.approved + metrics.changesRequested {
             issues.append("\(label): review decisions do not equal approved + changes requested.")
         }
-        if activity.awaiting > activity.handoffs {
-            issues.append("\(label): awaiting handoffs exceed handoffs in the window.")
+        validateRate(metrics.acceptanceRate, numerator: metrics.approved, denominator: metrics.decisions,
+                     name: "acceptance", range: label, issues: &issues)
+        validateRate(metrics.reworkRate, numerator: metrics.changesRequested, denominator: metrics.decisions,
+                     name: "rework", range: label, issues: &issues)
+        if metrics.decisions > 0,
+           let acceptance = metrics.acceptanceRate,
+           let rework = metrics.reworkRate,
+           abs(acceptance + rework - 1) > 0.000_000_1 {
+            issues.append("\(label): acceptance + rework does not equal 100%.")
         }
+        if (metrics.openNow == 0) != (metrics.medianOpenAge == nil) {
+            issues.append("\(label): median open age does not reconcile with open now.")
+        }
+        if (metrics.merged == 0) != (metrics.medianTimeToMerge == nil) {
+            issues.append("\(label): median merge time does not reconcile with window merges.")
+        }
+        let transitionIDs = metrics.reenteredTransitions.map(\.id)
+            + metrics.closedTransitions.map(\.id)
+            + metrics.draftedTransitions.map(\.id)
+        appendDuplicateIssue(transitionIDs, label: "window transition", to: &issues)
+        appendDuplicateIssue(metrics.approvalEventIDs + metrics.changesRequestedEventIDs,
+                             label: "window review event", to: &issues)
     }
 
     static func requireValid(
@@ -146,34 +175,6 @@ enum SnapshotReconciler {
     ) throws {
         let report = validate(snapshot, asOf: asOf, actionConfiguration: actionConfiguration)
         guard report.isValid else { throw DataIntegrityError(issues: report.issues) }
-    }
-
-    private static func validate(_ metrics: CohortMetrics, range: CohortRange, issues: inout [String]) {
-        let label = range.rawValue
-        if metrics.opened != metrics.open + metrics.merged + metrics.closedUnmerged {
-            issues.append("\(label): opened does not equal open + merged + closed.")
-        }
-        if metrics.decisions != metrics.approved + metrics.changesRequested {
-            issues.append("\(label): completed reviews do not equal approved + rework.")
-        }
-        if metrics.handedOff > metrics.opened {
-            issues.append("\(label): handed-off PRs exceed opened PRs.")
-        }
-        validateRate(metrics.mergeCompletionRate, numerator: metrics.merged, denominator: metrics.opened, name: "merged", range: label, issues: &issues)
-        validateRate(metrics.acceptanceRate, numerator: metrics.approved, denominator: metrics.decisions, name: "acceptance", range: label, issues: &issues)
-        validateRate(metrics.reworkRate, numerator: metrics.changesRequested, denominator: metrics.decisions, name: "rework", range: label, issues: &issues)
-        if metrics.decisions > 0,
-           let acceptance = metrics.acceptanceRate,
-           let rework = metrics.reworkRate,
-           abs(acceptance + rework - 1) > 0.000_000_1 {
-            issues.append("\(label): acceptance + rework does not equal 100%.")
-        }
-        if (metrics.open == 0) != (metrics.medianOpenAge == nil) {
-            issues.append("\(label): median open age does not reconcile with the open count.")
-        }
-        if (metrics.merged == 0) != (metrics.medianTimeToMerge == nil) {
-            issues.append("\(label): median merge time does not reconcile with the merged count.")
-        }
     }
 
     private static func validateRate(

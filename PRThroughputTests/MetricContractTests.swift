@@ -7,13 +7,12 @@ final class MetricContractTests: XCTestCase {
         let source = snapshot(now: now)
         let canonical = try source.canonicalMetrics(asOf: now)
 
-        XCTAssertEqual(canonical.schemaVersion, 3)
-        XCTAssertEqual(canonical.metricContractVersion, "3")
+        XCTAssertEqual(canonical.schemaVersion, 4)
+        XCTAssertEqual(canonical.metricContractVersion, "4")
         XCTAssertEqual(canonical.primaryRange, .days7)
-        XCTAssertEqual(canonical.ranges.map(\.range), CohortRange.allCases)
-        for range in CohortRange.allCases {
-            XCTAssertEqual(canonical.metrics(for: range), source.metrics(range: range, asOf: now))
-            XCTAssertEqual(canonical.activity(for: range), source.activity(range: range, asOf: now))
+        XCTAssertEqual(canonical.ranges.map(\.range), WindowRange.allCases)
+        for range in WindowRange.allCases {
+            XCTAssertEqual(canonical.metrics(for: range), source.windowMetrics(range: range, asOf: now))
         }
     }
 
@@ -46,7 +45,7 @@ final class MetricContractTests: XCTestCase {
         XCTAssertEqual(try decoder.decode(CanonicalMetricSnapshot.self, from: encoder.encode(canonical)), canonical)
     }
 
-    func testCanonicalOpenIDsRespectHistoricalAsOf() throws {
+    func testCanonicalWindowBoundariesAndOpenIDsRespectAsOf() throws {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         var source = snapshot(now: now)
         source.pullRequests[0] = PullRequestSnapshot(
@@ -58,13 +57,24 @@ final class MetricContractTests: XCTestCase {
             authorID: "viewer",
             eligibleAt: now.addingTimeInterval(-3_600),
             isDraft: false,
-            state: .closed,
-            closedAt: now.addingTimeInterval(60)
+            state: .open
         )
 
         let range = try XCTUnwrap(source.canonicalMetrics(asOf: now).ranges.first { $0.range == .days7 })
-        XCTAssertEqual(range.openPullRequestIDs, ["open"])
-        XCTAssertEqual(range.metrics.open, 1)
+        XCTAssertEqual(range.windowStart, now.addingTimeInterval(-WindowRange.days7.duration))
+        XCTAssertEqual(range.metrics.openAtEndIDs, ["open"])
+        XCTAssertEqual(range.metrics.openNow, 1)
+    }
+
+    func testDefaultCanonicalBoundaryUsesLastVerifiedFullSync() throws {
+        let verified = Date(timeIntervalSince1970: 1_700_000_000)
+        var source = snapshot(now: verified)
+        source.metadata.lastSuccessfulSync = verified
+
+        let canonical = try source.canonicalMetrics()
+
+        XCTAssertEqual(canonical.asOf, verified)
+        XCTAssertTrue(canonical.ranges.allSatisfy { $0.metrics.asOf == verified })
     }
 
     private func snapshot(now: Date) -> AppSnapshot {

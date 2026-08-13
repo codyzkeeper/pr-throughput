@@ -17,7 +17,7 @@ final class AppModel: ObservableObject {
 
     @Published var connectionState: ConnectionState = .disconnected
     @Published var snapshot: AppSnapshot?
-    @Published var selectedRange: CohortRange = .days7
+    @Published var selectedRange: WindowRange = .days7
     @Published var isSyncing = false
     @Published var errorMessage: String?
     @Published var deviceAuthorization: DeviceAuthorization?

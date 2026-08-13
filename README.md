@@ -15,9 +15,10 @@ The initial public build is ad-hoc signed because this project does not yet have
 ## What it shows
 
 - Open, non-draft PRs currently assigned to the authenticated account
-- Opened, handoff, merge, approval, and changes-requested events in rolling 48-hour, 7-day, and 30-day windows
-- Opening-cohort merge completion, median open age, acceptance, and median time to merge
-- A small opened-versus-merged activity chart
+- A reconciled authored-PR backlog ledger for rolling 48-hour, 7-day, and 30-day windows
+- Window-scoped handoff, merge, approval, and changes-requested events with explicit acceptance numerators and denominators
+- Window merge count and median merge time, plus current authored-backlog size and median age
+- A small new-versus-merged activity chart
 - A local **Needs attention** inbox driven by configurable labels on open pull requests in one GitHub organization
 
 The app does not mutate GitHub data. It stores the OAuth token in your local Keychain and does not persist source code, diffs, comments, or review bodies. No account data, token, metrics cache, preferences, or notifications are included in release artifacts. See [PRIVACY.md](PRIVACY.md) for the complete data-handling summary.
@@ -83,7 +84,7 @@ Scripts/capture_canonical_metrics.sh build/canonical-metrics.json
 
 Set `PR_THROUGHPUT_EXPECTED_LOGIN` when an unattended consumer must fail closed unless the token belongs to one particular GitHub login.
 
-`PRThroughput/Domain/WindowActivityMetrics.swift` owns event-window counts and `PRThroughput/Domain/CohortMetrics.swift` owns opening-cohort KPIs. `PRThroughput/Domain/MetricContract.swift` wraps both in a versioned interchange schema; downstream consumers should use that exported JSON rather than recreating the formulas. The snapshot contains 48-hour, 7-day, and 30-day ranges, with 7 days identified as the primary range, plus an input digest and exact `asOf` timestamp. A formula or schema change must also advance the metric-contract version so incompatible snapshots are not silently compared.
+`PRThroughput/Domain/WindowMetrics.swift` owns the rolling backlog ledger, review activity, and window KPIs. `PRThroughput/Domain/MetricContract.swift` publishes that model through canonical contract v4; downstream consumers should use the export rather than recreating formulas. Every range is anchored to the same verified full-sync `asOf`, with an exact window start, source digest, transition IDs, and numerator/denominator facts.
 
 Every accepted snapshot passes source and metric reconciliation before it can replace the last trusted totals. The checks reject duplicate or orphaned facts, handoffs that cannot be reproduced from the GitHub timeline, contradictory PR terminal state, broken shipping/review partitions, and rates that do not match their displayed numerators and denominators. The menu shows “Reconciled” for a snapshot that passed these checks; the canonical exporter independently repeats the arithmetic checks at its JSON boundary.
 
@@ -93,13 +94,14 @@ For repeatable visual regression checks without reading Keychain or contacting G
 
 ## Metric definitions
 
-- A PR enters a cohort when first opened as non-draft or first marked ready for review.
-- Raw activity counts describe events occurring during the selected window, regardless of when the affected PR entered its opening cohort. They are independent counts and do not form a partition.
+- A PR enters active authored work when it first opens as non-draft or is first marked ready for review. Draft and closed PRs are outside the active backlog.
+- Open at start is the active authored backlog immediately before the selected window. New and re-entered transitions add work; merge, close, and draft transitions remove work; the result must equal open now.
+- All event counts use the exact selected rolling window and one verified full-sync closing timestamp.
 - A handoff requires the authenticated user to be unassigned, a named person to be assigned, and that person to be requested for review within a five-minute span.
 - Handoff activity counts cycles, so repeated handoffs of one PR count separately. Withdrawn cycles do not count.
 - Each completed review cycle counts separately, including repeated reviews of the same PR. A later GitHub review dismissal does not erase the original review event from the historical KPI.
-- Merge completion is merged PRs divided by all non-draft PRs in the selected opening cohort.
-- Median age is the median elapsed time since cohort eligibility among PRs that are still open.
-- Acceptance is approvals divided by decided reviews.
-- Acceptance and rework use completed reviews as their denominator. Pending and withdrawn handoffs are excluded; withdrawn cycles remain internal history only.
+- Median age now is elapsed time since first eligibility among active authored PRs at the closing boundary.
+- Median merge is first-eligibility-to-merge duration for PRs merged in the selected window.
+- Acceptance is approval review events divided by approval plus changes-requested events in the selected window.
+- Awaiting now is closing-boundary state. Pending and withdrawn handoffs are excluded from acceptance; withdrawn cycles remain internal history only.
 - Team and bot review requests do not count.

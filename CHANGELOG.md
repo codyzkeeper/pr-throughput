@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0 — 2026-08-12
+
+- Replaced opening-cohort metrics with one exact rolling-window backlog ledger.
+- Added open-at-start, new, re-entered, merged, closed, drafted, open-now, and net-change values.
+- Made review acceptance use only approval and changes-requested events in the selected window, with its numerator and denominator visible.
+- Added reopen events and complete paginated discovery of old authored PRs that remain open.
+- Anchored every dashboard metric to one verified full-sync timestamp and advanced the canonical metric contract to v4.
+- Invalidated pre-v0.3 timeline caches so the new ledger cannot be marked reconciled without authoritative reopen history.
+
 ## 0.2.2 — 2026-08-11
 
 - Prevented a slower general refresh from overwriting newer GitHub action-label state or seen state from the 15-second notification refresh lane.

@@ -331,18 +331,8 @@ struct AppSnapshot: Codable, Sendable {
 
     var assignedCount: Int { assignedPullRequestIDs.count }
 
-    func metrics(range: CohortRange, asOf: Date = Date()) -> CohortMetrics {
-        CohortMetrics.calculate(
-            pullRequests: pullRequests,
-            handoffs: handoffs,
-            viewerID: viewer.id,
-            range: range,
-            asOf: asOf
-        )
-    }
-
-    func activity(range: CohortRange, asOf: Date = Date()) -> WindowActivityMetrics {
-        WindowActivityMetrics.calculate(
+    func windowMetrics(range: WindowRange, asOf: Date = Date()) -> WindowMetrics {
+        WindowMetrics.calculate(
             pullRequests: pullRequests,
             events: events,
             handoffs: handoffs,
@@ -352,8 +342,9 @@ struct AppSnapshot: Codable, Sendable {
         )
     }
 
-    func canonicalMetrics(asOf: Date = Date()) throws -> CanonicalMetricSnapshot {
-        try MetricContract.snapshot(from: self, asOf: asOf)
+    func canonicalMetrics(asOf: Date? = nil) throws -> CanonicalMetricSnapshot {
+        let verifiedBoundary = asOf ?? metadata.lastSuccessfulSync ?? Date()
+        return try MetricContract.snapshot(from: self, asOf: verifiedBoundary)
     }
 
     func reconciliation(asOf: Date = Date()) -> ReconciliationReport {

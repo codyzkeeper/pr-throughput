@@ -69,7 +69,9 @@ struct LiveE2E {
 
         let second = try await coordinator.refresh(previous: first.snapshot, configuration: actionConfiguration)
         try validate(second.snapshot, viewer: viewer, configuration: actionConfiguration)
-        let asOf = Date()
+        guard let asOf = second.snapshot.metadata.lastSuccessfulSync else {
+            throw LiveE2EError.invariant("missing verified full-sync boundary")
+        }
 
         if options.canonicalMetrics {
             let canonical = try second.snapshot.canonicalMetrics(asOf: asOf)
@@ -81,13 +83,11 @@ struct LiveE2E {
             return
         }
 
-        let metrics = second.snapshot.metrics(range: .days30, asOf: asOf)
-        let cohortIDs = Set(second.snapshot.pullRequests.filter {
-            guard $0.authorID == viewer.id, let eligibleAt = $0.eligibleAt else { return false }
-            return eligibleAt >= asOf.addingTimeInterval(-CohortRange.days30.duration) && eligibleAt <= asOf
-        }.map(\.id))
+        let metrics = second.snapshot.windowMetrics(range: .days30, asOf: asOf)
+        let authoredIDs = Set(second.snapshot.pullRequests.filter { $0.authorID == viewer.id }.map(\.id))
         let reviewEvents = second.snapshot.events.filter { event in
-            guard cohortIDs.contains(event.pullRequestID),
+            guard authoredIDs.contains(event.pullRequestID),
+                  event.at >= asOf.addingTimeInterval(-WindowRange.days30.duration), event.at <= asOf,
                   case let .reviewed(reviewer, state) = event.kind,
                   reviewer.id != viewer.id else { return false }
             return state == .approved || state == .changesRequested
@@ -109,7 +109,7 @@ struct LiveE2E {
             "reviewCycleOutcomes": allOutcomes,
             "reviewDecisionEvents30d": reviewEvents.count,
             "completedReviews30d": metrics.decisions,
-            "pendingReviews30d": metrics.pending,
+            "awaitingReviewsNow": metrics.awaitingNow,
             "actionPullRequests": second.snapshot.attentionItems.count,
             "actionLabelFacts": second.snapshot.attentionItems.flatMap(\.applications).count,
             "actionSearchDisagreements": second.snapshot.metadata.actionSearchDisagreementCount ?? -1,
@@ -160,20 +160,13 @@ struct LiveE2E {
         try require(snapshot.metadata.lastSuccessfulSync != nil, "missing sync timestamp")
         try require(snapshot.metadata.lastError == nil, "sync reported: \(snapshot.metadata.lastError ?? "unknown error")")
 
-        for range in CohortRange.allCases {
-            let metrics = snapshot.metrics(range: range, asOf: asOf)
-            let activity = snapshot.activity(range: range, asOf: asOf)
-            try require(activity.decisions == activity.approved + activity.changesRequested, "activity review partition for \(range.rawValue)")
-            try require(activity.awaiting <= activity.handoffs, "activity pending handoffs for \(range.rawValue)")
-            try require(metrics.opened == metrics.merged + metrics.open + metrics.closedUnmerged, "shipping partition for \(range.rawValue)")
+        for range in WindowRange.allCases {
+            let metrics = snapshot.windowMetrics(range: range, asOf: asOf)
+            try require(metrics.openAtStart + metrics.new + metrics.reentered - metrics.merged
+                        - metrics.closed - metrics.drafted == metrics.openNow,
+                        "backlog ledger for \(range.rawValue)")
             try require(metrics.decisions == metrics.approved + metrics.changesRequested, "review partition for \(range.rawValue)")
-            if let completion = metrics.mergeCompletionRate {
-                try require(metrics.opened > 0, "completion denominator for \(range.rawValue)")
-                try require(abs(completion - Double(metrics.merged) / Double(metrics.opened)) < 0.000_001, "completion rate for \(range.rawValue)")
-            } else {
-                try require(metrics.opened == 0, "missing completion rate for \(range.rawValue)")
-            }
-            try require((metrics.medianOpenAge == nil) == (metrics.open == 0), "open-age availability for \(range.rawValue)")
+            try require((metrics.medianOpenAge == nil) == (metrics.openNow == 0), "open-age availability for \(range.rawValue)")
             if let acceptance = metrics.acceptanceRate, let rework = metrics.reworkRate {
                 try require(abs(acceptance + rework - 1) < 0.000_001, "review rates for \(range.rawValue)")
             } else {

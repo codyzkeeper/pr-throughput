@@ -9,11 +9,41 @@ final class SnapshotReconcilerTests: XCTestCase {
 
         XCTAssertTrue(report.isValid, report.issues.joined(separator: "\n"))
         XCTAssertNoThrow(try SnapshotReconciler.requireValid(snapshot, asOf: now))
-        for range in CohortRange.allCases {
-            let metrics = snapshot.metrics(range: range, asOf: now)
-            XCTAssertEqual(metrics.opened, metrics.open + metrics.merged + metrics.closedUnmerged)
+        for range in WindowRange.allCases {
+            let metrics = snapshot.windowMetrics(range: range, asOf: now)
+            XCTAssertEqual(
+                metrics.openAtStart + metrics.new + metrics.reentered
+                    - metrics.merged - metrics.closed - metrics.drafted,
+                metrics.openNow
+            )
             XCTAssertEqual(metrics.decisions, metrics.approved + metrics.changesRequested)
         }
+    }
+
+    func testRejectsStaleTimelineSchemaBeforePublishingWindowMetrics() {
+        var snapshot = makeSnapshot()
+        snapshot.metadata.timelineSchemaVersion = TimelineEvent.sourceSchemaVersion - 1
+
+        let report = snapshot.reconciliation(asOf: now)
+
+        XCTAssertFalse(report.isValid)
+        XCTAssertTrue(report.issues.contains { $0.contains("schema is stale") })
+    }
+
+    func testRejectsReducerClosingStateThatDisagreesWithGitHub() {
+        var snapshot = makeSnapshot()
+        let pull = snapshot.pullRequests[0]
+        snapshot.pullRequests[0] = PullRequestSnapshot(
+            id: pull.id, repository: pull.repository, number: pull.number,
+            title: pull.title, url: pull.url, authorID: pull.authorID,
+            eligibleAt: pull.eligibleAt, updatedAt: pull.updatedAt,
+            isDraft: true, state: .open
+        )
+
+        let report = snapshot.reconciliation(asOf: now)
+
+        XCTAssertFalse(report.isValid)
+        XCTAssertTrue(report.issues.contains { $0.contains("closing state") })
     }
 
     func testRejectsStoredHandoffThatCannotBeDerivedFromTimeline() {

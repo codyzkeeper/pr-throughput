@@ -16,12 +16,13 @@ enum TimelineEventKind: Codable, Hashable, Sendable {
     case reviewed(reviewer: GitHubUser, state: ReviewDecisionState)
     case readyForReview
     case convertedToDraft
+    case reopened
     case merged
     case closed
 }
 
 struct TimelineEvent: Codable, Hashable, Sendable {
-    static let sourceSchemaVersion = 2
+    static let sourceSchemaVersion = 3
 
     let id: String
     let pullRequestID: String
