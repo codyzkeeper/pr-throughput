@@ -2,6 +2,28 @@ import AppKit
 import Combine
 import SwiftUI
 
+enum StatusItemPresentation: Equatable {
+    case disconnected
+    case syncing
+    case assignedCount
+    case approved
+    case merged
+
+    static func resolve(
+        transient: TransientEventKind?,
+        connectionState: AppModel.ConnectionState,
+        hasVerifiedSnapshot: Bool
+    ) -> Self {
+        switch transient {
+        case .approved: .approved
+        case .merged: .merged
+        case nil where connectionState != .connected: .disconnected
+        case nil where !hasVerifiedSnapshot: .syncing
+        case nil: .assignedCount
+        }
+    }
+}
+
 @MainActor
 final class StatusItemController: NSObject, NSPopoverDelegate {
     private static let autosaveName = "PRThroughputStatusItem"
@@ -67,14 +89,20 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private func updateButton() {
         guard let button = statusItem.button else { return }
 
-        switch model.transientKind {
+        switch StatusItemPresentation.resolve(
+            transient: model.transientKind,
+            connectionState: model.connectionState,
+            hasVerifiedSnapshot: model.snapshot != nil && model.isDataVerified
+        ) {
         case .approved:
             setSymbol("checkmark.seal.fill", on: button)
         case .merged:
             setSymbol("arrow.triangle.merge", on: button)
-        case nil where model.connectionState == .connected:
+        case .assignedCount:
             setAssignedCount(on: button)
-        case nil:
+        case .syncing:
+            setSymbol("arrow.clockwise", on: button)
+        case .disconnected:
             setSymbol("arrow.trianglehead.branch", on: button)
         }
 
@@ -162,6 +190,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     private var accessibilitySummary: String {
         guard model.connectionState == .connected else { return "GitHub disconnected" }
+        guard model.snapshot != nil, model.isDataVerified else {
+            return "Syncing GitHub history; verified totals are not yet available"
+        }
         let attentionCount = model.unseenItems.count
         let assigned = "\(model.assignedCount) open pull requests assigned to you"
         guard attentionCount > 0 else { return assigned }

@@ -10,9 +10,7 @@ enum HandoffResolver {
         var result = handoffs.sorted { lhs, rhs in
             lhs.at == rhs.at ? lhs.id < rhs.id : lhs.at < rhs.at
         }
-        let orderedEvents = events.sorted { lhs, rhs in
-            lhs.at == rhs.at ? lhs.id < rhs.id : lhs.at < rhs.at
-        }
+        let orderedEvents = events.sorted(by: eventOrder)
         var nextHandoff = 0
         var latestByReviewer: [ReviewKey: Int] = [:]
         var pendingByPullRequest: [String: Set<Int>] = [:]
@@ -71,5 +69,12 @@ enum HandoffResolver {
 
         activateHandoffs(through: .distantFuture)
         return result.sorted { $0.id < $1.id }
+    }
+
+    private static func eventOrder(_ lhs: TimelineEvent, _ rhs: TimelineEvent) -> Bool {
+        if lhs.at != rhs.at { return lhs.at < rhs.at }
+        if lhs.pullRequestID != rhs.pullRequestID { return lhs.pullRequestID < rhs.pullRequestID }
+        if lhs.sourceOrder != rhs.sourceOrder { return lhs.sourceOrder < rhs.sourceOrder }
+        return lhs.id < rhs.id
     }
 }

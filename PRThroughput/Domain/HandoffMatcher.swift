@@ -98,7 +98,9 @@ enum HandoffMatcher {
     }
 
     private static func eventOrder(_ lhs: TimelineEvent, _ rhs: TimelineEvent) -> Bool {
-        lhs.at == rhs.at ? lhs.id < rhs.id : lhs.at < rhs.at
+        if lhs.at != rhs.at { return lhs.at < rhs.at }
+        if lhs.sourceOrder != rhs.sourceOrder { return lhs.sourceOrder < rhs.sourceOrder }
+        return lhs.id < rhs.id
     }
 
     private static func lowerBound(_ events: [TimelineEvent], at date: Date) -> Int {

@@ -39,6 +39,30 @@ final class SyncCoordinatorTests: XCTestCase {
         ))
     }
 
+    func testRecentTimelineSuffixRebasesAgainstCachedSourceOrder() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let previous = [
+            TimelineEvent(id: "old", pullRequestID: "pr", kind: .readyForReview,
+                          at: now.addingTimeInterval(-1), sourceOrder: 98),
+            TimelineEvent(id: "overlap", pullRequestID: "pr", kind: .reopened,
+                          at: now, sourceOrder: 99)
+        ]
+        let update = RecentPullRequestUpdate(
+            id: "pr", updatedAt: now, isDraft: true, state: "OPEN", mergedAt: nil, closedAt: nil,
+            events: [
+                TimelineEvent(id: "overlap", pullRequestID: "pr", kind: .reopened,
+                              at: now, sourceOrder: 0),
+                TimelineEvent(id: "new", pullRequestID: "pr", kind: .convertedToDraft,
+                              at: now, sourceOrder: 1)
+            ]
+        )
+
+        let merged = SyncCoordinator.mergingTimelineUpdates(previous: previous, updates: [update])
+
+        XCTAssertEqual(merged.map(\.id), ["old", "overlap", "new"])
+        XCTAssertEqual(merged.map(\.sourceOrder), [98, 99, 100])
+    }
+
     func testTimelineNotificationDeltaExcludesKnownAndStaleEvents() {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         let viewer = GitHubUser(id: "viewer", login: "me", kind: .user)

@@ -3,6 +3,36 @@ import XCTest
 
 @MainActor
 final class PersistenceTests: XCTestCase {
+    func testConnectedMenuWaitsForVerifiedSnapshotBeforeShowingMetrics() {
+        XCTAssertEqual(
+            MenuPresentationState.resolve(connectionState: .connected, hasSnapshot: false),
+            .initialSync
+        )
+        XCTAssertEqual(
+            MenuPresentationState.resolve(connectionState: .connected, hasSnapshot: true),
+            .dashboard
+        )
+    }
+
+    func testStatusItemNeverPresentsZeroAsFactBeforeFirstVerifiedSnapshot() {
+        XCTAssertEqual(
+            StatusItemPresentation.resolve(
+                transient: nil,
+                connectionState: .connected,
+                hasVerifiedSnapshot: false
+            ),
+            .syncing
+        )
+        XCTAssertEqual(
+            StatusItemPresentation.resolve(
+                transient: nil,
+                connectionState: .connected,
+                hasVerifiedSnapshot: true
+            ),
+            .assignedCount
+        )
+    }
+
     func testSnapshotRoundTripsAndReplacementIsIdempotent() throws {
         let store = try SnapshotStore(inMemory: true)
         let viewer = GitHubUser(id: "viewer", login: "me", kind: .user)
@@ -47,6 +77,16 @@ final class PersistenceTests: XCTestCase {
 
         XCTAssertNil(metadata.timelineSchemaVersion)
         XCTAssertTrue(metadata.baselineEstablished)
+    }
+
+    func testLegacyTimelineEventWithoutSourceOrderStillDecodes() throws {
+        let data = Data(#"{"id":"event","pullRequestID":"pr","kind":{"readyForReview":{}},"at":"2026-08-06T18:00:00Z"}"#.utf8)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let event = try decoder.decode(TimelineEvent.self, from: data)
+
+        XCTAssertEqual(event.sourceOrder, 0)
     }
 
     func testLegacyAttentionItemDecodesAsUnverifiedAndInactive() throws {

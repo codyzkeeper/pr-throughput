@@ -355,6 +355,70 @@ final class GitHubAPITests: XCTestCase {
         XCTAssertEqual(state, .changesRequested)
     }
 
+    func testTimelineRequestsAndDecodesReopenedEvents() async throws {
+        StubURLProtocol.handler = { request in
+            let body = try XCTUnwrap(request.httpBody ?? Self.readBodyStream(request.httpBodyStream))
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            let query = try XCTUnwrap(object["query"] as? String)
+            XCTAssertTrue(query.contains("REOPENED_EVENT"))
+            XCTAssertTrue(query.contains("... on ReopenedEvent"))
+            let payload = #"{"data":{"node":{"timelineItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"__typename":"ReopenedEvent","id":"reopen","createdAt":"2026-08-02T14:00:00Z"}]}}}}"#
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(payload.utf8))
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let api = GitHubAPI(token: "test", session: URLSession(configuration: configuration))
+
+        let timeline = try await api.timeline(pullRequestID: "pr")
+
+        XCTAssertEqual(timeline.map(\.id), ["reopen"])
+        guard case .reopened = timeline[0].kind else { return XCTFail("Expected reopen event") }
+    }
+
+    func testTimelinePreservesConnectionOrderAtIdenticalTimestamps() async throws {
+        StubURLProtocol.handler = { request in
+            let timestamp = "2026-08-02T14:00:00Z"
+            let payload = #"{"data":{"node":{"timelineItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"__typename":"ReadyForReviewEvent","id":"ready","createdAt":"\#(timestamp)"},{"__typename":"ConvertToDraftEvent","id":"draft","createdAt":"\#(timestamp)"}]}}}}"#
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(payload.utf8))
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let api = GitHubAPI(token: "test", session: URLSession(configuration: configuration))
+
+        let timeline = try await api.timeline(pullRequestID: "pr")
+
+        XCTAssertEqual(timeline.map(\.id), ["ready", "draft"])
+        XCTAssertEqual(timeline.map(\.sourceOrder), [0, 1])
+    }
+
+    func testAuthoredOpenPullRequestsPaginatesWithoutSearch() async throws {
+        var requestCount = 0
+        StubURLProtocol.handler = { request in
+            requestCount += 1
+            let body = try XCTUnwrap(request.httpBody ?? Self.readBodyStream(request.httpBodyStream))
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            let query = try XCTUnwrap(object["query"] as? String)
+            XCTAssertTrue(query.contains("viewer"))
+            XCTAssertTrue(query.contains("pullRequests"))
+            XCTAssertTrue(query.contains("states: [OPEN]"))
+            let variables = try XCTUnwrap(object["variables"] as? [String: Any])
+            let cursor = variables["cursor"] as? String
+            let id = cursor == nil ? "one" : "two"
+            let hasNext = cursor == nil
+            let end = hasNext ? #""next""# : "null"
+            let payload = #"{"data":{"viewer":{"pullRequests":{"pageInfo":{"hasNextPage":\#(hasNext),"endCursor":\#(end)},"nodes":[{"id":"\#(id)","number":1,"title":"PR","url":"https://github.com/o/r/pull/1","createdAt":"2026-08-01T12:00:00Z","updatedAt":"2026-08-02T12:00:00Z","isDraft":false,"state":"OPEN","mergedAt":null,"closedAt":null,"author":{"__typename":"User","login":"me","id":"viewer"},"repository":{"nameWithOwner":"o/r"}}]}}}}"#
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(payload.utf8))
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let api = GitHubAPI(token: "test", session: URLSession(configuration: configuration))
+
+        let pulls = try await api.authoredOpenPullRequests()
+
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertEqual(Set(pulls.map(\.id)), ["one", "two"])
+    }
+
     func testSearchRejectsRepeatedPaginationCursor() async {
         StubURLProtocol.handler = { request in
             let payload = #"{"data":{"search":{"issueCount":2,"pageInfo":{"hasNextPage":true,"endCursor":"same"},"nodes":[]}}}"#

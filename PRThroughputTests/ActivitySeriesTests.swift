@@ -17,7 +17,7 @@ final class ActivitySeriesTests: XCTestCase {
         let snapshot = AppSnapshot(viewer: viewer, pullRequests: pulls, events: [], handoffs: [], assignedPullRequestIDs: [], attentionItems: [], metadata: .empty)
 
         let points = ActivitySeriesBuilder.points(snapshot: snapshot, range: .days7, asOf: asOf, calendar: calendar)
-        let opened = points.filter { $0.series == "Opened" }
+        let opened = points.filter { $0.series == "New" }
         let merged = points.filter { $0.series == "Merged" }
 
         XCTAssertEqual(opened.count, 8)
@@ -67,7 +67,7 @@ final class ActivitySeriesTests: XCTestCase {
 
         let points = ActivitySeriesBuilder.points(snapshot: snapshot, range: .days7, asOf: asOf, calendar: calendar)
 
-        XCTAssertEqual(points.filter { $0.series == "Opened" }.reduce(0) { $0 + $1.count }, 0)
+        XCTAssertEqual(points.filter { $0.series == "New" }.reduce(0) { $0 + $1.count }, 0)
         XCTAssertEqual(points.filter { $0.series == "Merged" }.reduce(0) { $0 + $1.count }, 1)
     }
 
@@ -79,7 +79,7 @@ final class ActivitySeriesTests: XCTestCase {
         let snapshot = AppSnapshot(viewer: viewer, pullRequests: [], events: [], handoffs: [], assignedPullRequestIDs: [], attentionItems: [], metadata: .empty)
 
         let points = ActivitySeriesBuilder.points(snapshot: snapshot, range: .hours48, asOf: asOf, calendar: calendar)
-        let opened = points.filter { $0.series == "Opened" }
+        let opened = points.filter { $0.series == "New" }
 
         XCTAssertEqual(opened.count, 49)
         XCTAssertTrue(opened.allSatisfy { calendar.component(.minute, from: $0.date) == 0 })

@@ -35,7 +35,7 @@ p = pathlib.Path(sys.argv[1])
 expected_login = sys.argv[2].strip().casefold()
 data = json.loads(p.read_text())
 required = {"schemaVersion", "metricContractVersion", "primaryRange", "asOf", "viewerLogin", "sourceDigest", "ranges"}
-if not required.issubset(data) or data["schemaVersion"] != 3 or data["metricContractVersion"] != "3" or data["primaryRange"] != "7d":
+if not required.issubset(data) or data["schemaVersion"] != 4 or data["metricContractVersion"] != "4" or data["primaryRange"] != "7d":
     raise SystemExit("canonical metric snapshot failed contract validation")
 if not isinstance(data.get("viewerLogin"), str) or not data["viewerLogin"].strip():
     raise SystemExit("canonical metric snapshot has no authenticated viewer")
@@ -47,20 +47,38 @@ if len(data["ranges"]) != 3:
     raise SystemExit("canonical metric snapshot contains duplicate ranges")
 for item in data["ranges"]:
     label = item["range"]
-    activity = item["activity"]
     metrics = item["metrics"]
-    if activity["approved"] < 0 or activity["changesRequested"] < 0:
-        raise SystemExit(f"{label} activity decision counts cannot be negative")
-    if activity["awaiting"] > activity["handoffs"]:
-        raise SystemExit(f"{label} awaiting handoffs exceed window handoffs")
-    if metrics["opened"] != metrics["open"] + metrics["merged"] + metrics["closedUnmerged"]:
-        raise SystemExit(f"{label} shipping totals do not reconcile")
+    if item.get("windowStart") != metrics.get("windowStart") or metrics.get("asOf") != data["asOf"]:
+        raise SystemExit(f"{label} window boundaries do not reconcile")
+    expected_open = (metrics["openAtStart"] + metrics["new"] + metrics["reentered"]
+                     - metrics["merged"] - metrics["closed"] - metrics["drafted"])
+    if expected_open != metrics["openNow"]:
+        raise SystemExit(f"{label} backlog ledger does not reconcile")
+    if metrics["netChange"] != metrics["openNow"] - metrics["openAtStart"]:
+        raise SystemExit(f"{label} net backlog change does not reconcile")
     if metrics["decisions"] != metrics["approved"] + metrics["changesRequested"]:
         raise SystemExit(f"{label} review totals do not reconcile")
-    if metrics["handedOff"] > metrics["opened"]:
-        raise SystemExit(f"{label} handoffs exceed the opened cohort")
+    id_counts = (
+        ("openAtStart", "openAtStartIDs"),
+        ("new", "newIDs"),
+        ("reentered", "reenteredTransitions"),
+        ("merged", "mergedIDs"),
+        ("closed", "closedTransitions"),
+        ("drafted", "draftedTransitions"),
+        ("openNow", "openAtEndIDs"),
+        ("handoffs", "handoffIDs"),
+        ("approved", "approvalEventIDs"),
+        ("changesRequested", "changesRequestedEventIDs"),
+        ("awaitingNow", "awaitingHandoffIDs"),
+    )
+    for count_name, facts_name in id_counts:
+        facts = metrics.get(facts_name)
+        if not isinstance(facts, list) or metrics[count_name] != len(facts):
+            raise SystemExit(f"{label} {count_name} does not match its source facts")
+        fact_ids = [fact.get("id") if isinstance(fact, dict) else fact for fact in facts]
+        if len(fact_ids) != len(set(fact_ids)):
+            raise SystemExit(f"{label} {facts_name} contains duplicate facts")
     expected_rates = (
-        ("mergeCompletionRate", metrics["merged"], metrics["opened"]),
         ("acceptanceRate", metrics["approved"], metrics["decisions"]),
         ("reworkRate", metrics["changesRequested"], metrics["decisions"]),
     )

@@ -1,6 +1,19 @@
 import Charts
 import SwiftUI
 
+enum MenuPresentationState: Equatable {
+    case onboarding
+    case initialSync
+    case dashboard
+
+    static func resolve(connectionState: AppModel.ConnectionState, hasSnapshot: Bool) -> Self {
+        switch connectionState {
+        case .disconnected, .authorizing: .onboarding
+        case .connected: hasSnapshot ? .dashboard : .initialSync
+        }
+    }
+}
+
 struct MenuPopoverView: View {
     @ObservedObject var model: AppModel
     @State private var attentionFrames: [String: CGRect] = [:]
@@ -10,10 +23,15 @@ struct MenuPopoverView: View {
 
     var body: some View {
         Group {
-            switch model.connectionState {
-            case .disconnected, .authorizing:
+            switch MenuPresentationState.resolve(
+                connectionState: model.connectionState,
+                hasSnapshot: model.snapshot != nil
+            ) {
+            case .onboarding:
                 OnboardingView(model: model)
-            case .connected:
+            case .initialSync:
+                initialSync
+            case .dashboard:
                 dashboard
             }
         }
@@ -21,10 +39,50 @@ struct MenuPopoverView: View {
         .task { await model.start() }
     }
 
+    private var initialSync: some View {
+        VStack(spacing: 0) {
+            VStack(spacing: 12) {
+                if model.isSyncing {
+                    ProgressView()
+                        .controlSize(.regular)
+                } else if model.errorMessage != nil {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+                Text(initialSyncTitle)
+                    .font(.headline)
+                Text("Verified totals will appear after reconciliation completes. The first sync can take a few minutes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 300)
+                if let error = model.errorMessage {
+                    Label(error, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .frame(maxWidth: 330, alignment: .leading)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(20)
+            Divider()
+            footer
+        }
+        .frame(height: 300)
+    }
+
+    private var initialSyncTitle: String {
+        if model.isSyncing { return "Syncing GitHub history…" }
+        if model.errorMessage != nil { return "Unable to verify totals" }
+        return "Preparing first sync…"
+    }
+
     private var dashboard: some View {
-        let asOf = Date()
-        let metrics = model.snapshot?.metrics(range: model.selectedRange, asOf: asOf) ?? .empty
-        let activity = model.snapshot?.activity(range: model.selectedRange, asOf: asOf) ?? .empty
+        // Keep every card on the same verified source boundary. The 15-second
+        // assigned/action lanes must not silently move a five-minute metric window.
+        let asOf = model.snapshot?.metadata.lastSuccessfulSync ?? Date()
+        let metrics = model.snapshot?.windowMetrics(range: model.selectedRange, asOf: asOf)
+            ?? .empty(range: model.selectedRange, asOf: asOf)
         return VStack(spacing: 0) {
             header
             Divider()
@@ -37,58 +95,48 @@ struct MenuPopoverView: View {
                             .id(Self.attentionViewportID)
 
                         Picker("Window", selection: $model.selectedRange) {
-                        ForEach(CohortRange.allCases) { range in Text(range.rawValue).tag(range) }
+                        ForEach(WindowRange.allCases) { range in Text(range.rawValue).tag(range) }
                     }
                     .pickerStyle(.segmented)
-                    .help("Choose the rolling window used for activity and opening-cohort membership.")
+                    .help("Choose the rolling window used by every event count and opening balance.")
 
-                    ActivityCard(
-                        title: "Activity",
-                        tint: .blue,
-                        summary: nil,
-                        values: [
-                            MetricValue(label: "Opened", value: activity.opened, help: "PRs that first became ready for review during the selected window."),
-                            MetricValue(label: "Handoffs", value: activity.handoffs, help: "Qualifying handoff cycles initiated during the selected window. Repeated cycles count separately; withdrawn cycles do not count."),
-                            MetricValue(label: "Merged", value: activity.merged, help: "PRs merged during the selected window, regardless of when they were opened.")
-                        ],
-                        help: "Independent events during the selected window. The counts can refer to different PRs and are not stages that must reconcile."
+                    BacklogFlowCard(
+                        metrics: metrics,
+                        range: model.selectedRange
                     )
                     ActivityCard(
-                        title: "Review activity",
+                        title: "Review events",
                         tint: .orange,
-                        summary: "\(activity.decisions) decision\(activity.decisions == 1 ? "" : "s")",
+                        summary: acceptanceSummary(metrics),
                         values: [
-                            MetricValue(label: "Approved", value: activity.approved, help: "Approval review events submitted during the selected window."),
-                            MetricValue(label: "Changes", accessibilityLabel: "Changes requested", value: activity.changesRequested, help: "Changes-requested review events submitted during the selected window."),
-                            MetricValue(label: "Awaiting", value: activity.awaiting, help: "Non-withdrawn handoffs initiated during the selected window that still have no review decision.")
+                            MetricValue(label: "Handoffs", value: metrics.handoffs, help: "Non-withdrawn named-person handoff cycles initiated during the selected window."),
+                            MetricValue(label: "Approved", value: metrics.approved, help: "Qualifying approval review events submitted during the selected window."),
+                            MetricValue(label: "Changes", accessibilityLabel: "Changes requested", value: metrics.changesRequested, help: "Qualifying changes-requested review events submitted during the selected window."),
+                            MetricValue(label: "Awaiting now", value: metrics.awaitingNow, help: "All unresolved, non-withdrawn handoffs at the verified closing boundary, regardless of when they began.")
                         ],
-                        help: "Review events during the selected window. Awaiting handoffs are not included in the decision count."
+                        help: "Review decisions and handoffs during the selected window. Awaiting now is current closing-boundary state and is excluded from acceptance."
                     )
 
                     VStack(alignment: .leading, spacing: 7) {
-                        Text("Opening cohort")
+                        Text("Window KPIs")
                             .font(.headline)
-                            .help("Performance of PRs that first became ready for review during the selected window. Their outcomes continue to update after the window ends.")
+                            .help("Throughput and review efficiency measured only against the selected rolling window.")
                         HStack(spacing: 10) {
-                            MetricTile(title: "Merged", value: percent(metrics.mergeCompletionRate), tint: .blue)
-                                .help("Percentage of PRs opened in this cohort that have merged")
-                            MetricTile(title: "Median age", value: openAgeText(metrics), tint: .orange)
-                                .help("Median age of PRs in this cohort that are still open")
-                                .accessibilityLabel("Median age of open pull requests")
-                                .accessibilityValue(openAgeText(metrics))
+                            MetricTile(title: "Merged", value: "\(metrics.merged)", tint: .blue)
+                                .help("PRs merged during the selected window")
                             MetricTile(title: "Acceptance", value: percent(metrics.acceptanceRate), tint: .green)
-                                .help("Approved reviews as a percentage of completed reviews")
+                                .help("Approval review events divided by all qualifying review decisions in the selected window")
+                            MetricTile(title: "Median merge", value: metrics.medianTimeToMerge.map(duration) ?? "—", tint: .purple)
+                                .help("Median time from first becoming ready to merge for PRs merged during the selected window")
                         }
                     }
 
                     HStack {
-                        Label(maturityText(metrics), systemImage: "hourglass")
-                            .help("Cohort PRs that have merged or closed without merging.")
+                        Label("\(metrics.openNow) open now", systemImage: "hourglass")
+                            .help("Authored, ready, non-draft PRs open at the verified closing boundary.")
                         Spacer()
-                        if let seconds = metrics.medianTimeToMerge {
-                            Text("Median merge: \(duration(seconds))")
-                                .help("Median time from first becoming ready for review to merge for merged PRs in this opening cohort.")
-                        }
+                        Text("Median age now: \(metrics.medianOpenAge.map(duration) ?? "—")")
+                            .help("Median time since first becoming ready among authored PRs open at the verified closing boundary.")
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -295,20 +343,15 @@ struct MenuPopoverView: View {
         .padding(12)
     }
 
-    private func maturityText(_ metrics: CohortMetrics) -> String {
-        let terminal = metrics.merged + metrics.closedUnmerged
-        return "\(terminal) of \(metrics.opened) PRs merged or closed"
-    }
-
     private func fullSyncText(_ date: Date) -> String {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
         return "Full sync \(formatter.localizedString(for: date, relativeTo: Date()))"
     }
 
-    private func openAgeText(_ metrics: CohortMetrics) -> String {
-        if metrics.open == 0 { return "0m" }
-        return metrics.medianOpenAge.map(duration) ?? "—"
+    private func acceptanceSummary(_ metrics: WindowMetrics) -> String {
+        guard let rate = metrics.acceptanceRate else { return "No decisions" }
+        return "\(metrics.approved)/\(metrics.decisions) · \(percent(rate))"
     }
 
     private func duration(_ seconds: TimeInterval) -> String {
@@ -337,6 +380,60 @@ private struct MetricValue {
     var accessibilityLabel: String? = nil
     let value: Int
     let help: String
+}
+
+private struct BacklogFlowCard: View {
+    let metrics: WindowMetrics
+    let range: WindowRange
+
+    private var values: [MetricValue] {
+        [
+            MetricValue(label: "Open at start", value: metrics.openAtStart, help: "Authored, ready, non-draft PRs open immediately before the rolling window."),
+            MetricValue(label: "New", value: metrics.new, help: "PRs entering ready, open work for the first time during the window."),
+            MetricValue(label: "Re-entered", value: metrics.reentered, help: "Existing PRs returning through reopen or draft-to-ready during the window."),
+            MetricValue(label: "Merged", value: metrics.merged, help: "Active authored PRs merged during the window."),
+            MetricValue(label: "Closed", value: metrics.closed, help: "Active authored PRs closed without merging during the window."),
+            MetricValue(label: "Drafted", value: metrics.drafted, help: "Active authored PRs converted back to draft during the window."),
+            MetricValue(label: "Open now", value: metrics.openNow, help: "Authored, ready, non-draft PRs open at the verified closing boundary."),
+            MetricValue(label: "Net", value: metrics.netChange, help: "Open now minus open at start.")
+        ]
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Authored PR flow")
+                    .font(.headline)
+                    .lineLimit(1)
+                Spacer()
+                Label("Balances", systemImage: "equal.circle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.blue)
+                    .help("Opening balance plus entries minus exits equals open now.")
+            }
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 0), count: 4), spacing: 8) {
+                ForEach(Array(values.enumerated()), id: \.offset) { _, item in
+                    VStack(spacing: 2) {
+                        Text("\(item.value)").font(.title3).monospacedDigit()
+                        Text(item.label)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.72)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .help(item.help)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(item.label)
+                    .accessibilityValue("\(item.value)")
+                    .accessibilityHint(item.help)
+                }
+            }
+        }
+        .padding(11)
+        .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+        .help("Backlog transitions in the rolling \(range.rawValue) window.")
+    }
 }
 
 private struct ActivityCard: View {
@@ -424,13 +521,13 @@ struct ActivityPoint: Identifiable, Equatable {
 
 private struct ActivityChart: View {
     let snapshot: AppSnapshot?
-    let range: CohortRange
+    let range: WindowRange
     let asOf: Date
 
     var body: some View {
         let chartPoints = points
         VStack(alignment: .leading, spacing: 6) {
-            Text("Opened and merged")
+            Text("New and merged by time")
                 .font(.headline)
                 .lineLimit(1)
                 .help("Event activity during the selected window. The 48-hour view uses hourly buckets; longer views use daily buckets.")
@@ -443,12 +540,12 @@ private struct ActivityChart: View {
                         .foregroundStyle(by: .value("Series", point.series))
                 }
             }
-            .chartForegroundStyleScale(["Opened": Color.blue, "Merged": Color.purple])
+            .chartForegroundStyleScale(["New": Color.blue, "Merged": Color.purple])
             .chartYAxis(.hidden)
             .chartLegend(position: .bottom, spacing: 10)
             .frame(height: 90)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Pull requests opened and merged during the selected window")
+            .accessibilityLabel("Pull requests first entering ready work and merging during the selected window")
             .accessibilityValue(chartSummary(chartPoints))
         }
         .padding(12)
@@ -460,16 +557,16 @@ private struct ActivityChart: View {
     }
 
     private func chartSummary(_ points: [ActivityPoint]) -> String {
-        let opened = points.filter { $0.series == "Opened" }.reduce(0) { $0 + $1.count }
+        let opened = points.filter { $0.series == "New" }.reduce(0) { $0 + $1.count }
         let merged = points.filter { $0.series == "Merged" }.reduce(0) { $0 + $1.count }
-        return "\(opened) opened and \(merged) merged in the \(range.rawValue) window."
+        return "\(opened) new and \(merged) merged in the \(range.rawValue) window."
     }
 }
 
 enum ActivitySeriesBuilder {
     static func points(
         snapshot: AppSnapshot?,
-        range: CohortRange,
+        range: WindowRange,
         asOf: Date,
         calendar: Calendar = .current
     ) -> [ActivityPoint] {
@@ -499,7 +596,7 @@ enum ActivitySeriesBuilder {
             guard let next = calendar.date(byAdding: component, value: 1, to: bucket), next > bucket else { break }
             bucket = next
         }
-        let openedPoints = buckets.map { ActivityPoint(date: $0, count: opened[$0, default: 0], series: "Opened") }
+        let openedPoints = buckets.map { ActivityPoint(date: $0, count: opened[$0, default: 0], series: "New") }
         let mergedPoints = buckets.map { ActivityPoint(date: $0, count: merged[$0, default: 0], series: "Merged") }
         return openedPoints + mergedPoints
     }

@@ -2,38 +2,16 @@ import CryptoKit
 import Foundation
 
 enum MetricContract {
-    static let schemaVersion = 3
-    static let metricContractVersion = "3"
-    static let primaryRange = CohortRange.days7
+    static let schemaVersion = 4
+    static let metricContractVersion = "4"
+    static let primaryRange = WindowRange.days7
 
     static func snapshot(from source: AppSnapshot, asOf: Date) throws -> CanonicalMetricSnapshot {
-        let rangeSnapshots = CohortRange.allCases.map { range in
-            let cohort = CohortMetrics.cohort(
-                pullRequests: source.pullRequests,
-                viewerID: source.viewer.id,
+        let ranges = WindowRange.allCases.map { range in
+            MetricRangeSnapshot(
                 range: range,
-                asOf: asOf
-            ).sorted { $0.id < $1.id }
-            let openIDs = cohort.filter { pull in
-                let merged = pull.mergedAt.map { $0 <= asOf } ?? false
-                let closed = pull.mergedAt == nil
-                    && pull.state == .closed
-                    && (pull.closedAt.map { $0 <= asOf } ?? true)
-                return !merged && !closed
-            }.map(\.id)
-            return MetricRangeSnapshot(
-                range: range,
-                cohortStartedAt: asOf.addingTimeInterval(-range.duration),
-                cohortPullRequestIDs: cohort.map(\.id),
-                openPullRequestIDs: openIDs,
-                activity: source.activity(range: range, asOf: asOf),
-                metrics: CohortMetrics.calculate(
-                    pullRequests: source.pullRequests,
-                    handoffs: source.handoffs,
-                    viewerID: source.viewer.id,
-                    range: range,
-                    asOf: asOf
-                )
+                windowStart: asOf.addingTimeInterval(-range.duration),
+                metrics: source.windowMetrics(range: range, asOf: asOf)
             )
         }
         return CanonicalMetricSnapshot(
@@ -44,7 +22,7 @@ enum MetricContract {
             viewerID: source.viewer.id,
             viewerLogin: source.viewer.login,
             sourceDigest: try sourceDigest(source),
-            ranges: rangeSnapshots
+            ranges: ranges
         )
     }
 
@@ -68,29 +46,22 @@ enum MetricContract {
 struct CanonicalMetricSnapshot: Codable, Equatable, Sendable {
     let schemaVersion: Int
     let metricContractVersion: String
-    let primaryRange: CohortRange
+    let primaryRange: WindowRange
     let asOf: Date
     let viewerID: String
     let viewerLogin: String
     let sourceDigest: String
     let ranges: [MetricRangeSnapshot]
 
-    func metrics(for range: CohortRange) -> CohortMetrics? {
+    func metrics(for range: WindowRange) -> WindowMetrics? {
         ranges.first { $0.range == range }?.metrics
-    }
-
-    func activity(for range: CohortRange) -> WindowActivityMetrics? {
-        ranges.first { $0.range == range }?.activity
     }
 }
 
 struct MetricRangeSnapshot: Codable, Equatable, Sendable {
-    let range: CohortRange
-    let cohortStartedAt: Date
-    let cohortPullRequestIDs: [String]
-    let openPullRequestIDs: [String]
-    let activity: WindowActivityMetrics
-    let metrics: CohortMetrics
+    let range: WindowRange
+    let windowStart: Date
+    let metrics: WindowMetrics
 }
 
 private struct MetricSourceFacts: Codable {
