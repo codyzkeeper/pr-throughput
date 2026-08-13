@@ -143,7 +143,7 @@ struct MenuPopoverView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
 
-                    ActivityChart(snapshot: model.snapshot, range: model.selectedRange, asOf: asOf)
+                    ActivityChart(snapshot: model.snapshot, metrics: metrics, range: model.selectedRange, asOf: asOf)
 
                     if let error = model.errorMessage {
                         Label(error, systemImage: "exclamationmark.triangle")
@@ -521,6 +521,7 @@ struct ActivityPoint: Identifiable, Equatable {
 
 private struct ActivityChart: View {
     let snapshot: AppSnapshot?
+    let metrics: WindowMetrics
     let range: WindowRange
     let asOf: Date
 
@@ -553,7 +554,7 @@ private struct ActivityChart: View {
     }
 
     private var points: [ActivityPoint] {
-        ActivitySeriesBuilder.points(snapshot: snapshot, range: range, asOf: asOf)
+        ActivitySeriesBuilder.points(snapshot: snapshot, metrics: metrics, range: range, asOf: asOf)
     }
 
     private func chartSummary(_ points: [ActivityPoint]) -> String {
@@ -567,6 +568,7 @@ private struct ActivityChart: View {
 enum ActivitySeriesBuilder {
     static func points(
         snapshot: AppSnapshot?,
+        metrics suppliedMetrics: WindowMetrics? = nil,
         range: WindowRange,
         asOf: Date,
         calendar: Calendar = .current
@@ -576,23 +578,27 @@ enum ActivitySeriesBuilder {
         let component: Calendar.Component = range == .hours48 ? .hour : .day
         guard let startBucket = calendar.dateInterval(of: component, for: start)?.start,
               let endBucket = calendar.dateInterval(of: component, for: asOf)?.start else { return [] }
-        var opened: [Date: Int] = [:]
+        var newlyReady: [Date: Int] = [:]
         var handoffs: [Date: Int] = [:]
         var merged: [Date: Int] = [:]
-        let authored = snapshot.pullRequests.filter { $0.authorID == snapshot.viewer.id && $0.eligibleAt != nil }
-        for pull in authored {
-            if let eligible = pull.eligibleAt, eligible >= start, eligible <= asOf,
+        // Use the same canonical source-ID sets as the visible metrics. The chart
+        // owns only time bucketing; it must never independently redefine which
+        // facts belong to the selected window.
+        let metrics = suppliedMetrics ?? snapshot.windowMetrics(range: range, asOf: asOf)
+        let newIDs = Set(metrics.newIDs)
+        let mergedIDs = Set(metrics.mergedIDs)
+        let handoffIDs = Set(metrics.handoffIDs)
+        for pull in snapshot.pullRequests {
+            if newIDs.contains(pull.id), let eligible = pull.eligibleAt,
                let bucket = calendar.dateInterval(of: component, for: eligible)?.start {
-                opened[bucket, default: 0] += 1
+                newlyReady[bucket, default: 0] += 1
             }
-            if let eligibleAt = pull.eligibleAt, let mergedAt = pull.mergedAt,
-               mergedAt >= eligibleAt, mergedAt >= start, mergedAt <= asOf,
+            if mergedIDs.contains(pull.id), let mergedAt = pull.mergedAt,
                let bucket = calendar.dateInterval(of: component, for: mergedAt)?.start {
                 merged[bucket, default: 0] += 1
             }
         }
-        let includedHandoffIDs = Set(snapshot.windowMetrics(range: range, asOf: asOf).handoffIDs)
-        for handoff in snapshot.handoffs where includedHandoffIDs.contains(handoff.id) {
+        for handoff in snapshot.handoffs where handoffIDs.contains(handoff.id) {
             if let bucket = calendar.dateInterval(of: component, for: handoff.at)?.start {
                 handoffs[bucket, default: 0] += 1
             }
@@ -604,7 +610,7 @@ enum ActivitySeriesBuilder {
             guard let next = calendar.date(byAdding: component, value: 1, to: bucket), next > bucket else { break }
             bucket = next
         }
-        let openedPoints = buckets.map { ActivityPoint(date: $0, count: opened[$0, default: 0], series: "New") }
+        let openedPoints = buckets.map { ActivityPoint(date: $0, count: newlyReady[$0, default: 0], series: "New") }
         let handoffPoints = buckets.map { ActivityPoint(date: $0, count: handoffs[$0, default: 0], series: "Handoffs") }
         let mergedPoints = buckets.map { ActivityPoint(date: $0, count: merged[$0, default: 0], series: "Merged") }
         return openedPoints + handoffPoints + mergedPoints
