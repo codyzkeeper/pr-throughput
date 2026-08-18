@@ -100,19 +100,33 @@ final class AppModel: ObservableObject {
         guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
         guard !hasStarted else { return }
         hasStarted = true
-        var storedToken: String?
-        do {
-            guard let token = try tokenStore.load() else { return }
-            storedToken = token
-            connectionState = .authorizing
-            try await connect(token: token)
-        } catch GitHubAPIError.unauthorized {
-            if let storedToken { _ = try? tokenStore.delete(ifMatching: storedToken) }
-            errorMessage = GitHubAPIError.unauthorized.localizedDescription
-            connectionState = .disconnected
-        } catch {
-            errorMessage = error.localizedDescription
-            connectionState = .disconnected
+        while !Task.isCancelled {
+            var storedToken: String?
+            do {
+                guard let token = try tokenStore.load() else { return }
+                storedToken = token
+                connectionState = .authorizing
+                try await connect(token: token)
+                return
+            } catch GitHubAPIError.unauthorized {
+                if let storedToken { _ = try? tokenStore.delete(ifMatching: storedToken) }
+                errorMessage = GitHubAPIError.unauthorized.localizedDescription
+                connectionState = .disconnected
+                return
+            } catch let error as KeychainTokenError where error.isTemporarilyUnavailable {
+                errorMessage = "The macOS Keychain is temporarily unavailable. Retrying after wake or unlock."
+                connectionState = .disconnected
+                do {
+                    try await Task.sleep(for: .seconds(15))
+                } catch {
+                    return
+                }
+                guard connectionState == .disconnected, signInTask == nil else { return }
+            } catch {
+                errorMessage = error.localizedDescription
+                connectionState = .disconnected
+                return
+            }
         }
     }
 

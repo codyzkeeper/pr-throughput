@@ -7,6 +7,7 @@
 - Added larger explicit open buttons to action rows and an Open all action for launching every listed PR in the default browser.
 - Migrated existing three-rule configurations without adding organization- or user-specific defaults to public builds.
 - Fixed quoted-label search syntax so newly labeled PRs are discovered beyond the bounded fast-refresh fallback set.
+- Retry startup after temporary locked/dark-wake Keychain failures instead of remaining disconnected until relaunch.
 
 ## 0.3.1 — 2026-08-13
 
