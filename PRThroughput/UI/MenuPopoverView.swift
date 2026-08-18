@@ -226,7 +226,7 @@ struct MenuPopoverView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .help("Open every pull request in this list in separate browser tabs")
+                .help("Open every pull request in this list in your default browser")
             }
             LazyVStack(spacing: 8) {
                 ForEach(model.unacknowledgedItems) { item in

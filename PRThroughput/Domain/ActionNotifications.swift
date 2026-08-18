@@ -148,22 +148,64 @@ struct ActionNotificationConfiguration: Codable, Equatable, Sendable {
 enum GitHubPullRequestURL {
     static func isSafe(_ url: URL) -> Bool {
         url.scheme == "https" && url.host?.lowercased() == "github.com"
+            && (url.port == nil || url.port == 443)
             && url.user == nil && url.password == nil
             && url.query == nil && url.fragment == nil
             && url.path.range(of: #"^/[^/]+/[^/]+/pull/[0-9]+/?$"#, options: .regularExpression) != nil
     }
 }
 
+struct AttentionBrowserTarget: Equatable, Sendable {
+    let itemID: String
+    let revisionID: String
+    let url: URL
+}
+
 enum AttentionBrowserPlan {
-    static func urls(for items: [AttentionItem]) -> [URL] {
+    static func targets(for items: [AttentionItem]) -> [AttentionBrowserTarget] {
         var seen = Set<String>()
         return items.compactMap { item in
-            guard item.isActive, GitHubPullRequestURL.isSafe(item.url) else { return nil }
+            guard item.isActive, let revisionID = item.revisionID,
+                  GitHubPullRequestURL.isSafe(item.url) else { return nil }
             let identity = item.url.path.hasSuffix("/")
                 ? String(item.url.path.dropLast()).lowercased()
                 : item.url.path.lowercased()
-            return seen.insert(identity).inserted ? item.url : nil
+            guard seen.insert(identity).inserted else { return nil }
+            return AttentionBrowserTarget(itemID: item.id, revisionID: revisionID, url: item.url)
         }
+    }
+
+    static func urls(for items: [AttentionItem]) -> [URL] {
+        targets(for: items).map(\.url)
+    }
+}
+
+struct AttentionSeenMutation: Sendable {
+    let items: [AttentionItem]
+    let markedItemIDs: [String]
+}
+
+enum AttentionAcknowledgementPlan {
+    static func markingSeen(
+        targets: [AttentionBrowserTarget],
+        in items: [AttentionItem],
+        at date: Date
+    ) -> AttentionSeenMutation {
+        let revisions = Dictionary(
+            targets.map { ($0.itemID, $0.revisionID) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var updated = items
+        var markedItemIDs: [String] = []
+        for index in updated.indices {
+            let item = updated[index]
+            guard item.isActive, let revision = revisions[item.id], item.revisionID == revision else { continue }
+            let mutation = item.markingSeen(revision: revision, at: date)
+            guard mutation.didMutate else { continue }
+            updated[index] = mutation.item
+            markedItemIDs.append(item.id)
+        }
+        return AttentionSeenMutation(items: updated, markedItemIDs: markedItemIDs)
     }
 }
 

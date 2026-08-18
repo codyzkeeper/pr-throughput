@@ -179,16 +179,42 @@ final class ActionNotificationTests: XCTestCase {
         XCTAssertEqual(AttentionBrowserPlan.urls(for: [inactive, unsafe, active]), [active.url])
     }
 
+    func testOpenAllAcknowledgementOnlyMarksCapturedRevisionsSeen() throws {
+        let original = actionItem(id: "PR_1", number: 1)
+        let unchanged = actionItem(id: "PR_2", number: 2)
+        let targets = AttentionBrowserPlan.targets(for: [original, unchanged])
+        let revised = AttentionItem.action(
+            pullRequestID: "PR_1", title: "PR", repository: "Org/repo", number: 1,
+            url: original.url,
+            applications: [application(
+                rule: .decide, event: "replacement", color: "B60205", labelName: "action needed"
+            )]
+        )
+        let newlyArrived = actionItem(id: "PR_3", number: 3)
+
+        let mutation = AttentionAcknowledgementPlan.markingSeen(
+            targets: targets,
+            in: [revised, unchanged, newlyArrived],
+            at: now
+        )
+
+        XCTAssertEqual(mutation.markedItemIDs, [unchanged.id])
+        XCTAssertTrue(try XCTUnwrap(mutation.items.first { $0.id == revised.id }).isUnseen)
+        XCTAssertFalse(try XCTUnwrap(mutation.items.first { $0.id == unchanged.id }).isUnseen)
+        XCTAssertTrue(try XCTUnwrap(mutation.items.first { $0.id == newlyArrived.id }).isUnseen)
+    }
+
     func testPullRequestURLValidatorRejectsCredentialsQueriesFragmentsAndLookalikePaths() {
         let unsafe = [
             "https://user@github.com/Org/repo/pull/3",
+            "https://github.com:444/Org/repo/pull/3",
             "https://github.com/Org/repo/pull/3?diff=split",
             "https://github.com/Org/repo/pull/3#discussion",
             "https://github.com/Org/repo/issues/3",
             "https://github.com.evil.example/Org/repo/pull/3"
         ].compactMap(URL.init(string:))
 
-        XCTAssertEqual(unsafe.count, 5)
+        XCTAssertEqual(unsafe.count, 6)
         XCTAssertTrue(unsafe.allSatisfy { !GitHubPullRequestURL.isSafe($0) })
         XCTAssertTrue(GitHubPullRequestURL.isSafe(URL(string: "https://github.com/Org/repo/pull/3")!))
     }

@@ -38,7 +38,6 @@ xcodebuild build \
   ARCHS='arm64 x86_64' \
   ONLY_ACTIVE_ARCH=NO \
   CODE_SIGNING_ALLOWED=NO \
-  OTHER_SWIFT_FLAGS='-disable-sandbox' \
   "GITHUB_CLIENT_ID=$github_client_id"
 
 mkdir -p "$output_dir"

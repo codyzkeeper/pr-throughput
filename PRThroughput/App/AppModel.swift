@@ -208,7 +208,12 @@ final class AppModel: ObservableObject {
     }
 
     func acknowledge(_ item: AttentionItem, open: Bool = true) {
-        defer { if open { NSWorkspace.shared.open(item.url) } }
+        if open {
+            guard GitHubPullRequestURL.isSafe(item.url), NSWorkspace.shared.open(item.url) else {
+                errorMessage = "Could not open this pull request in your browser."
+                return
+            }
+        }
         guard var updated = snapshot,
               let revisionID = item.revisionID,
               let index = updated.attentionItems.firstIndex(where: { $0.id == item.id }),
@@ -286,7 +291,8 @@ final class AppModel: ObservableObject {
     }
 
     func openAllAttentionItems() {
-        let urls = AttentionBrowserPlan.urls(for: unacknowledgedItems)
+        let targets = AttentionBrowserPlan.targets(for: unacknowledgedItems)
+        let urls = targets.map(\.url)
         guard let first = urls.first else { return }
         guard let browserURL = NSWorkspace.shared.urlForApplication(toOpen: first) else {
             errorMessage = "No browser is available to open these pull requests."
@@ -301,9 +307,31 @@ final class AppModel: ObservableObject {
                 if let error {
                     self?.errorMessage = "Could not open all pull requests: \(error.localizedDescription)"
                 } else {
-                    self?.acknowledgeAll()
+                    self?.markAttentionTargetsSeen(targets)
                 }
             }
+        }
+    }
+
+    private func markAttentionTargetsSeen(_ targets: [AttentionBrowserTarget]) {
+        guard var updated = snapshot else { return }
+        let mutation = AttentionAcknowledgementPlan.markingSeen(
+            targets: targets,
+            in: updated.attentionItems,
+            at: Date()
+        )
+        guard !mutation.markedItemIDs.isEmpty else { return }
+        updated.attentionItems = mutation.items
+        let markedIDs = Set(mutation.markedItemIDs)
+        let notificationIDs = updated.attentionItems.filter { markedIDs.contains($0.id) }.map {
+            systemNotificationID(for: $0, accountID: updated.viewer.id)
+        }
+        do {
+            try snapshotStore?.save(updated)
+            snapshot = updated
+            for id in notificationIDs { notifications.remove(id: id) }
+        } catch {
+            errorMessage = "Could not save notification state: \(error.localizedDescription)"
         }
     }
 
