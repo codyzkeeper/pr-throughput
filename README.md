@@ -18,12 +18,12 @@ The initial public build is ad-hoc signed because this project does not yet have
 - A reconciled authored-PR backlog ledger for rolling 48-hour, 7-day, and 30-day windows
 - Window-scoped handoff, merge, approval, and changes-requested events with explicit acceptance numerators and denominators
 - Window merge count and median merge time, plus current authored-backlog size and median age
-- A small new-versus-merged activity chart
+- A small new, handoff, and merged activity chart
 - A local **Needs attention** inbox driven by configurable labels on open pull requests in one GitHub organization
 
 The app does not mutate GitHub data. It stores the OAuth token in your local Keychain and does not persist source code, diffs, comments, or review bodies. No account data, token, metrics cache, preferences, or notifications are included in release artifacts. See [PRIVACY.md](PRIVACY.md) for the complete data-handling summary.
 
-Configure an organization and up to three ordered action labels in Settings. GitHub's current labels are authoritative: adding a configured label creates a quiet banner, feed row, and colored menu-bar dot; removing it or closing the PR removes that state. Multiple labels consolidate into one PR row. Seeing the row, opening it, or opening its macOS notification clears the dot while leaving the row visible; only GitHub label removal or PR closure removes it.
+Configure an organization and up to four ordered action labels in Settings. GitHub's current labels and per-repository colors are authoritative: adding a configured label creates a quiet banner, feed row, and colored menu-bar dot; removing it or closing the PR removes that state. Multiple labels consolidate into one PR row. Seeing the row, opening it, opening all listed PRs, or opening its macOS notification clears the dot while leaving the row visible; only GitHub label removal or PR closure removes it.
 
 ## Configure GitHub authentication
 
@@ -68,8 +68,8 @@ security find-generic-password -w -a oauth-token -s app.prthroughput.PRThroughpu
 
 The token is consumed through standard input and is never printed, persisted, or included in process arguments.
 
-To validate action labels too, set `PR_THROUGHPUT_ACTION_ORGANIZATION` and up to three
-`PR_THROUGHPUT_ACTION_LABEL_1`, `_2`, and `_3` environment variables. The harness checks
+To validate action labels too, set `PR_THROUGHPUT_ACTION_ORGANIZATION` and up to four
+`PR_THROUGHPUT_ACTION_LABEL_1`, `_2`, `_3`, and `_4` environment variables. The harness checks
 the same direct-label authority, colors, safe PR URLs, configuration revision, and
 reconciliation invariants used by the app; it still performs no GitHub writes.
 For a focused low-cost check, pass `--action-only` and provide comma-separated GraphQL

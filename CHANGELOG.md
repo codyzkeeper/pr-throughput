@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2 — 2026-08-17
+
+- Added a fourth configurable action-label rule for merge-ready pull requests.
+- Kept label colors authoritative per pull request so repository-level GitHub color changes appear without redelivering seen notifications.
+- Added larger explicit open buttons to action rows and an Open all action for launching every listed PR in separate browser tabs.
+- Migrated existing three-rule configurations without adding organization- or user-specific defaults to public builds.
+
 ## 0.3.1 — 2026-08-13
 
 - Clarified that the closing backlog is authored open work, distinct from the assigned-to-you menu-bar total.

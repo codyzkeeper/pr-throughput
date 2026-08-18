@@ -39,8 +39,7 @@ enum SnapshotReconciler {
         )
 
         for item in snapshot.attentionItems {
-            if item.url.scheme != "https" || item.url.host?.lowercased() != "github.com"
-                || !item.url.path.contains("/pull/") {
+            if !GitHubPullRequestURL.isSafe(item.url) {
                 issues.append("Attention inbox contains an invalid PR URL.")
             }
             switch item.kind {

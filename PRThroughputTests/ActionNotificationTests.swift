@@ -41,6 +41,63 @@ final class ActionNotificationTests: XCTestCase {
         XCTAssertTrue(ActionNotificationConfiguration.blank.rules.allSatisfy { !$0.isEnabled && $0.labelName.isEmpty })
     }
 
+    func testLegacyThreeRuleConfigurationMigratesWithoutAddingPersonalDefaults() throws {
+        let suiteName = "ActionNotificationTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let legacy = ActionNotificationConfiguration(
+            schemaVersion: 1,
+            organization: "Example-Organization",
+            rules: [
+                ActionRuleConfiguration(id: .decide, labelName: "owner: decide", isEnabled: true),
+                ActionRuleConfiguration(id: .invokeR2, labelName: "owner: invoke", isEnabled: true),
+                ActionRuleConfiguration(id: .assignReviewer, labelName: "owner: assign", isEnabled: true)
+            ]
+        )
+        suite.set(try JSONEncoder().encode(legacy), forKey: ActionNotificationConfiguration.storageKey)
+
+        let migrated = ActionNotificationConfiguration.load(defaults: suite)
+
+        XCTAssertEqual(migrated.schemaVersion, ActionNotificationConfiguration.schemaVersion)
+        XCTAssertEqual(migrated.rules.map(\.id), ActionRuleID.allCases)
+        XCTAssertEqual(migrated.rules.first(where: { $0.id == .decide })?.labelName, "owner: decide")
+        XCTAssertEqual(migrated.rules.first(where: { $0.id == .mergeable })?.labelName, "")
+        XCTAssertEqual(migrated.rules.first(where: { $0.id == .mergeable })?.isEnabled, false)
+        XCTAssertTrue(migrated.isConfigured)
+    }
+
+    func testMalformedLegacyConfigurationFailsClosed() throws {
+        let suiteName = "ActionNotificationTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let malformed = ActionNotificationConfiguration(
+            schemaVersion: 1,
+            organization: "Example-Organization",
+            rules: [
+                ActionRuleConfiguration(id: .decide, labelName: "owner: decide", isEnabled: true),
+                ActionRuleConfiguration(id: .invokeR2, labelName: "owner: invoke", isEnabled: true),
+                ActionRuleConfiguration(id: .mergeable, labelName: "owner: mergeable", isEnabled: true)
+            ]
+        )
+        suite.set(try JSONEncoder().encode(malformed), forKey: ActionNotificationConfiguration.storageKey)
+
+        XCTAssertEqual(ActionNotificationConfiguration.load(defaults: suite), .blank)
+    }
+
+    func testMergeableRuleHasLowestPriorityAndBuildsAQuotedSearch() throws {
+        var configuration = ActionNotificationConfiguration.blank
+        configuration.organization = "Example-Organization"
+        let mergeableIndex = try XCTUnwrap(configuration.rules.firstIndex { $0.id == .mergeable })
+        configuration.rules[mergeableIndex].labelName = "owner: mergeable"
+        configuration.rules[mergeableIndex].isEnabled = true
+
+        XCTAssertEqual(ActionRuleID.mergeable.priority, 3)
+        XCTAssertEqual(
+            try configuration.searchQuery(for: configuration.rules[mergeableIndex]),
+            #"org:Example-Organization is:pr is:open label:\"owner: mergeable\""#
+        )
+    }
+
     func testActionRowsAggregateApplicationsAndPrioritizeUnseenColor() {
         let green = application(rule: .assignReviewer, event: "green", color: "0E8A16")
         let yellow = application(rule: .invokeR2, event: "yellow", color: "FBCA04")
@@ -76,6 +133,64 @@ final class ActionNotificationTests: XCTestCase {
         XCTAssertNil(merged[0].seenAt)
         XCTAssertNil(merged[0].dismissedAt)
         XCTAssertNil(merged[0].deliveredAt)
+    }
+
+    func testCurrentGitHubColorReplacesCachedColorWithoutRedelivering() {
+        var cached = application(rule: .mergeable, event: "same", color: "0E8A16")
+        cached.seenAt = now
+        cached.deliveredAt = now
+        let refreshed = application(rule: .mergeable, event: "same", color: "0052CC")
+
+        let merged = ActionAttentionMerger.mergePresentation(incoming: [refreshed], previous: [cached])
+
+        XCTAssertEqual(merged[0].colorHex, "0052CC")
+        XCTAssertEqual(merged[0].seenAt, now)
+        XCTAssertEqual(merged[0].deliveredAt, now)
+    }
+
+    func testOpenAllPlanKeepsDisplayOrderAndDeduplicatesPullRequestURLs() {
+        let first = actionItem(id: "PR_1", number: 1)
+        let duplicate = AttentionItem.action(
+            pullRequestID: "PR_1-duplicate", title: "PR", repository: "Org/repo", number: 1,
+            url: URL(string: "https://github.com/org/REPO/pull/1/")!,
+            applications: [application(rule: .mergeable, event: "duplicate", color: "0052CC")]
+        )
+        let second = actionItem(id: "PR_2", number: 2)
+
+        XCTAssertEqual(
+            AttentionBrowserPlan.urls(for: [first, duplicate, second]),
+            [
+                URL(string: "https://github.com/Org/repo/pull/1")!,
+                URL(string: "https://github.com/Org/repo/pull/2")!
+            ]
+        )
+    }
+
+    func testOpenAllPlanRejectsInactiveAndUnsafeRows() {
+        let active = actionItem(id: "PR_1", number: 1)
+        var inactive = actionItem(id: "PR_2", number: 2)
+        inactive.actionApplications = []
+        let unsafe = AttentionItem.action(
+            pullRequestID: "PR_3", title: "Unsafe", repository: "Org/repo", number: 3,
+            url: URL(string: "https://example.com/Org/repo/pull/3")!,
+            applications: [application(rule: .mergeable, event: "unsafe", color: "0052CC")]
+        )
+
+        XCTAssertEqual(AttentionBrowserPlan.urls(for: [inactive, unsafe, active]), [active.url])
+    }
+
+    func testPullRequestURLValidatorRejectsCredentialsQueriesFragmentsAndLookalikePaths() {
+        let unsafe = [
+            "https://user@github.com/Org/repo/pull/3",
+            "https://github.com/Org/repo/pull/3?diff=split",
+            "https://github.com/Org/repo/pull/3#discussion",
+            "https://github.com/Org/repo/issues/3",
+            "https://github.com.evil.example/Org/repo/pull/3"
+        ].compactMap(URL.init(string:))
+
+        XCTAssertEqual(unsafe.count, 5)
+        XCTAssertTrue(unsafe.allSatisfy { !GitHubPullRequestURL.isSafe($0) })
+        XCTAssertTrue(GitHubPullRequestURL.isSafe(URL(string: "https://github.com/Org/repo/pull/3")!))
     }
 
     func testRemovingOneLabelDoesNotRedeliverAnExistingApplication() {
@@ -374,19 +489,24 @@ final class ActionNotificationTests: XCTestCase {
 
     private func configured() -> ActionNotificationConfiguration {
         ActionNotificationConfiguration(
-            schemaVersion: 1, organization: "Org",
+            schemaVersion: ActionNotificationConfiguration.schemaVersion, organization: "Org",
             rules: [
                 ActionRuleConfiguration(id: .decide, labelName: "action needed", isEnabled: true),
                 ActionRuleConfiguration(id: .invokeR2, labelName: "", isEnabled: false),
-                ActionRuleConfiguration(id: .assignReviewer, labelName: "", isEnabled: false)
+                ActionRuleConfiguration(id: .assignReviewer, labelName: "", isEnabled: false),
+                ActionRuleConfiguration(id: .mergeable, labelName: "", isEnabled: false)
             ]
         )
     }
 
     private func actionItem() -> AttentionItem {
+        actionItem(id: "PR_1", number: 1)
+    }
+
+    private func actionItem(id: String, number: Int) -> AttentionItem {
         AttentionItem.action(
-            pullRequestID: "PR_1", title: "PR", repository: "Org/repo", number: 1,
-            url: URL(string: "https://github.com/Org/repo/pull/1")!,
+            pullRequestID: id, title: "PR", repository: "Org/repo", number: number,
+            url: URL(string: "https://github.com/Org/repo/pull/\(number)")!,
             applications: [application(
                 rule: .decide, event: "event", color: "B60205", labelName: "action needed"
             )]

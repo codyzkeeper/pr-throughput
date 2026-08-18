@@ -188,7 +188,7 @@ actor GitHubAPI {
             guard pull.state == "OPEN",
                   pull.repository.nameWithOwner.split(separator: "/").first.map(String.init)?
                     .caseInsensitiveCompare(configuration.organization) == .orderedSame,
-                  Self.isSafePullRequestURL(pull.url) else { continue }
+                  GitHubPullRequestURL.isSafe(pull.url) else { continue }
             guard !pull.labels.pageInfo.hasNextPage else {
                 throw GitHubAPIError.incompleteDiscovery(expected: pull.labels.nodes.count + 1, received: pull.labels.nodes.count)
             }
@@ -314,12 +314,6 @@ actor GitHubAPI {
         )
         guard let node = envelope.data.node else { throw GitHubAPIError.invalidResponse }
         return node.timelineItems
-    }
-
-    private static func isSafePullRequestURL(_ url: URL) -> Bool {
-        url.scheme == "https" && url.host?.lowercased() == "github.com"
-            && url.user == nil && url.password == nil
-            && url.path.range(of: #"^/[^/]+/[^/]+/pull/[0-9]+/?$"#, options: .regularExpression) != nil
     }
 
     func timeline(pullRequestID: String) async throws -> [TimelineEvent] {

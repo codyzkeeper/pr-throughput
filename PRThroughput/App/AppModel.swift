@@ -44,9 +44,13 @@ final class AppModel: ObservableObject {
     private var activeActionSyncID: UUID?
     private var hasStarted = false
 
-    init() {
-        snapshotStore = try? SnapshotStore()
-        actionConfiguration = .load()
+    convenience init() {
+        self.init(snapshotStore: try? SnapshotStore(), actionConfiguration: .load())
+    }
+
+    init(snapshotStore: SnapshotStore?, actionConfiguration: ActionNotificationConfiguration) {
+        self.snapshotStore = snapshotStore
+        self.actionConfiguration = actionConfiguration
         let configured = Bundle.main.object(forInfoDictionaryKey: "GITHUB_CLIENT_ID") as? String
         oauthClientID = Self.resolveOAuthClientID(
             saved: UserDefaults.standard.string(forKey: "github.oauthClientID"),
@@ -278,6 +282,28 @@ final class AppModel: ObservableObject {
             for id in notificationIDs { notifications.remove(id: id) }
         } catch {
             errorMessage = "Could not save acknowledgements: \(error.localizedDescription)"
+        }
+    }
+
+    func openAllAttentionItems() {
+        let urls = AttentionBrowserPlan.urls(for: unacknowledgedItems)
+        guard let first = urls.first else { return }
+        guard let browserURL = NSWorkspace.shared.urlForApplication(toOpen: first) else {
+            errorMessage = "No browser is available to open these pull requests."
+            return
+        }
+        NSWorkspace.shared.open(
+            urls,
+            withApplicationAt: browserURL,
+            configuration: NSWorkspace.OpenConfiguration()
+        ) { [weak self] _, error in
+            Task { @MainActor [weak self] in
+                if let error {
+                    self?.errorMessage = "Could not open all pull requests: \(error.localizedDescription)"
+                } else {
+                    self?.acknowledgeAll()
+                }
+            }
         }
     }
 

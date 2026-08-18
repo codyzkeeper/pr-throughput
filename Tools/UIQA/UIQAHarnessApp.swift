@@ -8,16 +8,19 @@ struct UIQAHarnessApp: App {
         // Prevent the production view's task from reading Keychain or starting network work.
         setenv("XCTestConfigurationFilePath", "PRThroughputUIQA", 1)
         let actionConfiguration = ActionNotificationConfiguration(
-            schemaVersion: 1,
+            schemaVersion: ActionNotificationConfiguration.schemaVersion,
             organization: "Example-Organization",
             rules: [
                 ActionRuleConfiguration(id: .decide, labelName: "owner: decide", isEnabled: true),
                 ActionRuleConfiguration(id: .invokeR2, labelName: "owner: invoke R2", isEnabled: true),
-                ActionRuleConfiguration(id: .assignReviewer, labelName: "owner: assign reviewer", isEnabled: true)
+                ActionRuleConfiguration(id: .assignReviewer, labelName: "owner: assign reviewer", isEnabled: true),
+                ActionRuleConfiguration(id: .mergeable, labelName: "owner: mergeable", isEnabled: true)
             ]
         )
-        try? actionConfiguration.save()
-        let model = AppModel()
+        let model = AppModel(
+            snapshotStore: try? SnapshotStore(inMemory: true),
+            actionConfiguration: actionConfiguration
+        )
         model.connectionState = .connected
 #if UIQA_INITIAL_SYNC
         model.isSyncing = true
@@ -86,23 +89,35 @@ struct UIQAHarnessApp: App {
             events: events,
             handoffs: handoffs,
             assignedPullRequestIDs: ["pr-2"],
-            attentionItems: [AttentionItem.action(
-                pullRequestID: "pr-action", title: "Choose the rollout approach",
-                repository: "example/repository", number: 106,
-                url: URL(string: "https://github.com/example/repository/pull/106")!,
-                applications: [
-                    ActionLabelApplication(
-                        pullRequestID: "pr-action", ruleID: .decide, labelID: "label-red",
-                        labelEventID: "event-red", labelName: "decision needed", colorHex: "B60205",
-                        appliedAt: now, seenAt: nil, dismissedAt: nil
-                    ),
-                    ActionLabelApplication(
-                        pullRequestID: "pr-action", ruleID: .assignReviewer, labelID: "label-green",
-                        labelEventID: "event-green", labelName: "assign reviewer", colorHex: "0E8A16",
-                        appliedAt: now.addingTimeInterval(-60), seenAt: now, dismissedAt: nil
-                    )
-                ]
-            )],
+            attentionItems: [
+                AttentionItem.action(
+                    pullRequestID: "pr-action", title: "Choose the rollout approach",
+                    repository: "example/repository", number: 106,
+                    url: URL(string: "https://github.com/example/repository/pull/106")!,
+                    applications: [
+                        ActionLabelApplication(
+                            pullRequestID: "pr-action", ruleID: .decide, labelID: "label-red",
+                            labelEventID: "event-red", labelName: "decision needed", colorHex: "B60205",
+                            appliedAt: now, seenAt: nil, dismissedAt: nil
+                        ),
+                        ActionLabelApplication(
+                            pullRequestID: "pr-action", ruleID: .assignReviewer, labelID: "label-green",
+                            labelEventID: "event-green", labelName: "assign reviewer", colorHex: "0E8A16",
+                            appliedAt: now.addingTimeInterval(-60), seenAt: now, dismissedAt: nil
+                        )
+                    ]
+                ),
+                AttentionItem.action(
+                    pullRequestID: "pr-mergeable", title: "Ship the verified release",
+                    repository: "example/automation", number: 107,
+                    url: URL(string: "https://github.com/example/automation/pull/107")!,
+                    applications: [ActionLabelApplication(
+                        pullRequestID: "pr-mergeable", ruleID: .mergeable, labelID: "label-blue",
+                        labelEventID: "event-blue", labelName: "ready to merge", colorHex: "0052CC",
+                        appliedAt: now.addingTimeInterval(-30), seenAt: nil, dismissedAt: nil
+                    )]
+                )
+            ],
             metadata: SyncMetadata(
                 lastSuccessfulSync: now,
                 lastNotificationSync: now,

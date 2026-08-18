@@ -5,12 +5,14 @@ enum ActionRuleID: String, Codable, CaseIterable, Sendable {
     case decide
     case invokeR2
     case assignReviewer
+    case mergeable
 
     var priority: Int {
         switch self {
         case .decide: 0
         case .invokeR2: 1
         case .assignReviewer: 2
+        case .mergeable: 3
         }
     }
 
@@ -19,6 +21,7 @@ enum ActionRuleID: String, Codable, CaseIterable, Sendable {
         case .decide: "Decision"
         case .invokeR2: "Invoke R2"
         case .assignReviewer: "Assign reviewer"
+        case .mergeable: "Mergeable"
         }
     }
 }
@@ -37,14 +40,14 @@ enum ActionConfigurationError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .invalidOrganization: "Enter a GitHub organization name using letters, numbers, or hyphens."
-        case .invalidRules: "The three notification rules are incomplete or duplicated."
+        case .invalidRules: "The notification rules are incomplete or duplicated."
         case let .invalidLabel(rule): "Enter a valid GitHub label for \(rule.displayName)."
         }
     }
 }
 
 struct ActionNotificationConfiguration: Codable, Equatable, Sendable {
-    static let schemaVersion = 1
+    static let schemaVersion = 2
     static let storageKey = "notification.actionLabels.configuration.v1"
 
     let schemaVersion: Int
@@ -112,13 +115,55 @@ struct ActionNotificationConfiguration: Codable, Equatable, Sendable {
 
     static func load(defaults: UserDefaults = .standard) -> Self {
         guard let data = defaults.data(forKey: storageKey),
-              let value = try? JSONDecoder().decode(Self.self, from: data) else { return .blank }
-        return value
+              let stored = try? JSONDecoder().decode(Self.self, from: data) else { return .blank }
+        let value: Self
+        switch stored.schemaVersion {
+        case Self.schemaVersion:
+            value = stored
+        case 1:
+            let legacyRuleIDs: Set<ActionRuleID> = [.decide, .invokeR2, .assignReviewer]
+            let rulesByID = Dictionary(stored.rules.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            guard stored.rules.count == legacyRuleIDs.count,
+                  Set(stored.rules.map(\.id)) == legacyRuleIDs,
+                  rulesByID.count == stored.rules.count else { return .blank }
+            value = Self(
+                schemaVersion: Self.schemaVersion,
+                organization: stored.organization,
+                rules: ActionRuleID.allCases.map {
+                    rulesByID[$0] ?? ActionRuleConfiguration(id: $0, labelName: "", isEnabled: false)
+                }
+            )
+        default:
+            return .blank
+        }
+        return (try? value.validated()) ?? .blank
     }
 
     func save(defaults: UserDefaults = .standard) throws {
         let value = try validated()
         defaults.set(try JSONEncoder().encode(value), forKey: Self.storageKey)
+    }
+}
+
+enum GitHubPullRequestURL {
+    static func isSafe(_ url: URL) -> Bool {
+        url.scheme == "https" && url.host?.lowercased() == "github.com"
+            && url.user == nil && url.password == nil
+            && url.query == nil && url.fragment == nil
+            && url.path.range(of: #"^/[^/]+/[^/]+/pull/[0-9]+/?$"#, options: .regularExpression) != nil
+    }
+}
+
+enum AttentionBrowserPlan {
+    static func urls(for items: [AttentionItem]) -> [URL] {
+        var seen = Set<String>()
+        return items.compactMap { item in
+            guard item.isActive, GitHubPullRequestURL.isSafe(item.url) else { return nil }
+            let identity = item.url.path.hasSuffix("/")
+                ? String(item.url.path.dropLast()).lowercased()
+                : item.url.path.lowercased()
+            return seen.insert(identity).inserted ? item.url : nil
+        }
     }
 }
 

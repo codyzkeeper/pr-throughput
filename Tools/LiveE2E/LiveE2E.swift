@@ -181,14 +181,17 @@ struct LiveE2E {
         let names = [
             environment["PR_THROUGHPUT_ACTION_LABEL_1"] ?? "",
             environment["PR_THROUGHPUT_ACTION_LABEL_2"] ?? "",
-            environment["PR_THROUGHPUT_ACTION_LABEL_3"] ?? ""
+            environment["PR_THROUGHPUT_ACTION_LABEL_3"] ?? "",
+            environment["PR_THROUGHPUT_ACTION_LABEL_4"] ?? ""
         ]
         guard !organization.isEmpty else { return .blank }
         let rules = zip(ActionRuleID.allCases, names).map { id, name in
             ActionRuleConfiguration(id: id, labelName: name, isEnabled: !name.isEmpty)
         }
         return try ActionNotificationConfiguration(
-            schemaVersion: 1, organization: organization, rules: rules
+            schemaVersion: ActionNotificationConfiguration.schemaVersion,
+            organization: organization,
+            rules: rules
         ).validated()
     }
 
