@@ -16,10 +16,9 @@ final class ActionNotificationTests: XCTestCase {
         configuration.rules[0].isEnabled = true
 
         XCTAssertNoThrow(try configuration.validated())
-        XCTAssertEqual(
-            try configuration.searchQuery(for: configuration.rules[0]),
-            #"org:Example-Organization is:pr is:open label:\"owner: decide\""#
-        )
+        let query = try configuration.searchQuery(for: configuration.rules[0])
+        XCTAssertEqual(query, "org:Example-Organization is:pr is:open label:\"owner: decide\"")
+        XCTAssertFalse(query.contains(#"\""#), "GitHub search quotes must not contain literal escape slashes")
 
         configuration.organization = "Bad Organization\norg:other"
         XCTAssertThrowsError(try configuration.validated())
@@ -94,7 +93,7 @@ final class ActionNotificationTests: XCTestCase {
         XCTAssertEqual(ActionRuleID.mergeable.priority, 3)
         XCTAssertEqual(
             try configuration.searchQuery(for: configuration.rules[mergeableIndex]),
-            #"org:Example-Organization is:pr is:open label:\"owner: mergeable\""#
+            "org:Example-Organization is:pr is:open label:\"owner: mergeable\""
         )
     }
 

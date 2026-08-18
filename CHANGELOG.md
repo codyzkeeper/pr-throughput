@@ -6,6 +6,7 @@
 - Kept label colors authoritative per pull request so repository-level GitHub color changes appear without redelivering seen notifications.
 - Added larger explicit open buttons to action rows and an Open all action for launching every listed PR in the default browser.
 - Migrated existing three-rule configurations without adding organization- or user-specific defaults to public builds.
+- Fixed quoted-label search syntax so newly labeled PRs are discovered beyond the bounded fast-refresh fallback set.
 
 ## 0.3.1 — 2026-08-13
 

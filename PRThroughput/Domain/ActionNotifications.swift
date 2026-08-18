@@ -102,7 +102,7 @@ struct ActionNotificationConfiguration: Codable, Equatable, Sendable {
         guard let rule = valid.rules.first(where: { $0.id == rule.id }), rule.isEnabled else {
             throw ActionConfigurationError.invalidLabel(rule.id)
         }
-        return #"org:\#(valid.organization) is:pr is:open label:\"\#(rule.labelName)\""#
+        return "org:\(valid.organization) is:pr is:open label:\"\(rule.labelName)\""
     }
 
     var revision: String {
