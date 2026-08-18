@@ -4,10 +4,19 @@ import Security
 enum KeychainTokenError: LocalizedError {
     case unexpectedStatus(OSStatus)
 
+    var isTemporarilyUnavailable: Bool {
+        guard case let .unexpectedStatus(status) = self else { return false }
+        return status == errSecInDarkWake
+            || status == errSecInteractionNotAllowed
+            || status == errSecNotAvailable
+    }
+
     var errorDescription: String? {
         switch self {
         case let .unexpectedStatus(status):
-            "Keychain operation failed (\(status))."
+            isTemporarilyUnavailable
+                ? "The macOS Keychain is temporarily unavailable."
+                : "Keychain operation failed (\(status))."
         }
     }
 }

@@ -44,9 +44,13 @@ final class AppModel: ObservableObject {
     private var activeActionSyncID: UUID?
     private var hasStarted = false
 
-    init() {
-        snapshotStore = try? SnapshotStore()
-        actionConfiguration = .load()
+    convenience init() {
+        self.init(snapshotStore: try? SnapshotStore(), actionConfiguration: .load())
+    }
+
+    init(snapshotStore: SnapshotStore?, actionConfiguration: ActionNotificationConfiguration) {
+        self.snapshotStore = snapshotStore
+        self.actionConfiguration = actionConfiguration
         let configured = Bundle.main.object(forInfoDictionaryKey: "GITHUB_CLIENT_ID") as? String
         oauthClientID = Self.resolveOAuthClientID(
             saved: UserDefaults.standard.string(forKey: "github.oauthClientID"),
@@ -96,19 +100,33 @@ final class AppModel: ObservableObject {
         guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
         guard !hasStarted else { return }
         hasStarted = true
-        var storedToken: String?
-        do {
-            guard let token = try tokenStore.load() else { return }
-            storedToken = token
-            connectionState = .authorizing
-            try await connect(token: token)
-        } catch GitHubAPIError.unauthorized {
-            if let storedToken { _ = try? tokenStore.delete(ifMatching: storedToken) }
-            errorMessage = GitHubAPIError.unauthorized.localizedDescription
-            connectionState = .disconnected
-        } catch {
-            errorMessage = error.localizedDescription
-            connectionState = .disconnected
+        while !Task.isCancelled {
+            var storedToken: String?
+            do {
+                guard let token = try tokenStore.load() else { return }
+                storedToken = token
+                connectionState = .authorizing
+                try await connect(token: token)
+                return
+            } catch GitHubAPIError.unauthorized {
+                if let storedToken { _ = try? tokenStore.delete(ifMatching: storedToken) }
+                errorMessage = GitHubAPIError.unauthorized.localizedDescription
+                connectionState = .disconnected
+                return
+            } catch let error as KeychainTokenError where error.isTemporarilyUnavailable {
+                errorMessage = "The macOS Keychain is temporarily unavailable. Retrying after wake or unlock."
+                connectionState = .disconnected
+                do {
+                    try await Task.sleep(for: .seconds(15))
+                } catch {
+                    return
+                }
+                guard connectionState == .disconnected, signInTask == nil else { return }
+            } catch {
+                errorMessage = error.localizedDescription
+                connectionState = .disconnected
+                return
+            }
         }
     }
 
@@ -204,7 +222,12 @@ final class AppModel: ObservableObject {
     }
 
     func acknowledge(_ item: AttentionItem, open: Bool = true) {
-        defer { if open { NSWorkspace.shared.open(item.url) } }
+        if open {
+            guard GitHubPullRequestURL.isSafe(item.url), NSWorkspace.shared.open(item.url) else {
+                errorMessage = "Could not open this pull request in your browser."
+                return
+            }
+        }
         guard var updated = snapshot,
               let revisionID = item.revisionID,
               let index = updated.attentionItems.firstIndex(where: { $0.id == item.id }),
@@ -278,6 +301,51 @@ final class AppModel: ObservableObject {
             for id in notificationIDs { notifications.remove(id: id) }
         } catch {
             errorMessage = "Could not save acknowledgements: \(error.localizedDescription)"
+        }
+    }
+
+    func openAllAttentionItems() {
+        let targets = AttentionBrowserPlan.targets(for: unacknowledgedItems)
+        let urls = targets.map(\.url)
+        guard let first = urls.first else { return }
+        guard let browserURL = NSWorkspace.shared.urlForApplication(toOpen: first) else {
+            errorMessage = "No browser is available to open these pull requests."
+            return
+        }
+        NSWorkspace.shared.open(
+            urls,
+            withApplicationAt: browserURL,
+            configuration: NSWorkspace.OpenConfiguration()
+        ) { [weak self] _, error in
+            Task { @MainActor [weak self] in
+                if let error {
+                    self?.errorMessage = "Could not open all pull requests: \(error.localizedDescription)"
+                } else {
+                    self?.markAttentionTargetsSeen(targets)
+                }
+            }
+        }
+    }
+
+    private func markAttentionTargetsSeen(_ targets: [AttentionBrowserTarget]) {
+        guard var updated = snapshot else { return }
+        let mutation = AttentionAcknowledgementPlan.markingSeen(
+            targets: targets,
+            in: updated.attentionItems,
+            at: Date()
+        )
+        guard !mutation.markedItemIDs.isEmpty else { return }
+        updated.attentionItems = mutation.items
+        let markedIDs = Set(mutation.markedItemIDs)
+        let notificationIDs = updated.attentionItems.filter { markedIDs.contains($0.id) }.map {
+            systemNotificationID(for: $0, accountID: updated.viewer.id)
+        }
+        do {
+            try snapshotStore?.save(updated)
+            snapshot = updated
+            for id in notificationIDs { notifications.remove(id: id) }
+        } catch {
+            errorMessage = "Could not save notification state: \(error.localizedDescription)"
         }
     }
 

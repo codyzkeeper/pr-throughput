@@ -5,12 +5,14 @@ enum ActionRuleID: String, Codable, CaseIterable, Sendable {
     case decide
     case invokeR2
     case assignReviewer
+    case mergeable
 
     var priority: Int {
         switch self {
         case .decide: 0
         case .invokeR2: 1
         case .assignReviewer: 2
+        case .mergeable: 3
         }
     }
 
@@ -19,6 +21,7 @@ enum ActionRuleID: String, Codable, CaseIterable, Sendable {
         case .decide: "Decision"
         case .invokeR2: "Invoke R2"
         case .assignReviewer: "Assign reviewer"
+        case .mergeable: "Mergeable"
         }
     }
 }
@@ -37,14 +40,14 @@ enum ActionConfigurationError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .invalidOrganization: "Enter a GitHub organization name using letters, numbers, or hyphens."
-        case .invalidRules: "The three notification rules are incomplete or duplicated."
+        case .invalidRules: "The notification rules are incomplete or duplicated."
         case let .invalidLabel(rule): "Enter a valid GitHub label for \(rule.displayName)."
         }
     }
 }
 
 struct ActionNotificationConfiguration: Codable, Equatable, Sendable {
-    static let schemaVersion = 1
+    static let schemaVersion = 2
     static let storageKey = "notification.actionLabels.configuration.v1"
 
     let schemaVersion: Int
@@ -99,7 +102,7 @@ struct ActionNotificationConfiguration: Codable, Equatable, Sendable {
         guard let rule = valid.rules.first(where: { $0.id == rule.id }), rule.isEnabled else {
             throw ActionConfigurationError.invalidLabel(rule.id)
         }
-        return #"org:\#(valid.organization) is:pr is:open label:\"\#(rule.labelName)\""#
+        return "org:\(valid.organization) is:pr is:open label:\"\(rule.labelName)\""
     }
 
     var revision: String {
@@ -112,13 +115,97 @@ struct ActionNotificationConfiguration: Codable, Equatable, Sendable {
 
     static func load(defaults: UserDefaults = .standard) -> Self {
         guard let data = defaults.data(forKey: storageKey),
-              let value = try? JSONDecoder().decode(Self.self, from: data) else { return .blank }
-        return value
+              let stored = try? JSONDecoder().decode(Self.self, from: data) else { return .blank }
+        let value: Self
+        switch stored.schemaVersion {
+        case Self.schemaVersion:
+            value = stored
+        case 1:
+            let legacyRuleIDs: Set<ActionRuleID> = [.decide, .invokeR2, .assignReviewer]
+            let rulesByID = Dictionary(stored.rules.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            guard stored.rules.count == legacyRuleIDs.count,
+                  Set(stored.rules.map(\.id)) == legacyRuleIDs,
+                  rulesByID.count == stored.rules.count else { return .blank }
+            value = Self(
+                schemaVersion: Self.schemaVersion,
+                organization: stored.organization,
+                rules: ActionRuleID.allCases.map {
+                    rulesByID[$0] ?? ActionRuleConfiguration(id: $0, labelName: "", isEnabled: false)
+                }
+            )
+        default:
+            return .blank
+        }
+        return (try? value.validated()) ?? .blank
     }
 
     func save(defaults: UserDefaults = .standard) throws {
         let value = try validated()
         defaults.set(try JSONEncoder().encode(value), forKey: Self.storageKey)
+    }
+}
+
+enum GitHubPullRequestURL {
+    static func isSafe(_ url: URL) -> Bool {
+        url.scheme == "https" && url.host?.lowercased() == "github.com"
+            && (url.port == nil || url.port == 443)
+            && url.user == nil && url.password == nil
+            && url.query == nil && url.fragment == nil
+            && url.path.range(of: #"^/[^/]+/[^/]+/pull/[0-9]+/?$"#, options: .regularExpression) != nil
+    }
+}
+
+struct AttentionBrowserTarget: Equatable, Sendable {
+    let itemID: String
+    let revisionID: String
+    let url: URL
+}
+
+enum AttentionBrowserPlan {
+    static func targets(for items: [AttentionItem]) -> [AttentionBrowserTarget] {
+        var seen = Set<String>()
+        return items.compactMap { item in
+            guard item.isActive, let revisionID = item.revisionID,
+                  GitHubPullRequestURL.isSafe(item.url) else { return nil }
+            let identity = item.url.path.hasSuffix("/")
+                ? String(item.url.path.dropLast()).lowercased()
+                : item.url.path.lowercased()
+            guard seen.insert(identity).inserted else { return nil }
+            return AttentionBrowserTarget(itemID: item.id, revisionID: revisionID, url: item.url)
+        }
+    }
+
+    static func urls(for items: [AttentionItem]) -> [URL] {
+        targets(for: items).map(\.url)
+    }
+}
+
+struct AttentionSeenMutation: Sendable {
+    let items: [AttentionItem]
+    let markedItemIDs: [String]
+}
+
+enum AttentionAcknowledgementPlan {
+    static func markingSeen(
+        targets: [AttentionBrowserTarget],
+        in items: [AttentionItem],
+        at date: Date
+    ) -> AttentionSeenMutation {
+        let revisions = Dictionary(
+            targets.map { ($0.itemID, $0.revisionID) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var updated = items
+        var markedItemIDs: [String] = []
+        for index in updated.indices {
+            let item = updated[index]
+            guard item.isActive, let revision = revisions[item.id], item.revisionID == revision else { continue }
+            let mutation = item.markingSeen(revision: revision, at: date)
+            guard mutation.didMutate else { continue }
+            updated[index] = mutation.item
+            markedItemIDs.append(item.id)
+        }
+        return AttentionSeenMutation(items: updated, markedItemIDs: markedItemIDs)
     }
 }
 

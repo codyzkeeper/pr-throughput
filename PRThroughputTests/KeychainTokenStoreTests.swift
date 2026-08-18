@@ -1,7 +1,16 @@
+import Security
 import XCTest
 @testable import PRThroughput
 
 final class KeychainTokenStoreTests: XCTestCase {
+    func testOnlyTemporaryKeychainAvailabilityFailuresAreRetryable() {
+        XCTAssertTrue(KeychainTokenError.unexpectedStatus(errSecInDarkWake).isTemporarilyUnavailable)
+        XCTAssertTrue(KeychainTokenError.unexpectedStatus(errSecInteractionNotAllowed).isTemporarilyUnavailable)
+        XCTAssertTrue(KeychainTokenError.unexpectedStatus(errSecNotAvailable).isTemporarilyUnavailable)
+        XCTAssertFalse(KeychainTokenError.unexpectedStatus(errSecAuthFailed).isTemporarilyUnavailable)
+        XCTAssertFalse(KeychainTokenError.unexpectedStatus(errSecItemNotFound).isTemporarilyUnavailable)
+    }
+
     func testSaveUpdatesAnExistingToken() throws {
         let service = "app.prthroughput.PRThroughputTests.\(UUID().uuidString)"
         let store = KeychainTokenStore(service: service, account: "test-token")

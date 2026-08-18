@@ -221,14 +221,20 @@ struct MenuPopoverView: View {
                 Text("Needs attention").font(.headline)
                 Spacer()
                 Button("Mark all seen") { model.acknowledgeAll() }.buttonStyle(.plain).font(.caption)
+                Button { model.openAllAttentionItems() } label: {
+                    Label("Open all", systemImage: "arrow.up.right.square")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Open every pull request in this list in your default browser")
             }
             LazyVStack(spacing: 8) {
                 ForEach(model.unacknowledgedItems) { item in
-                Button { model.acknowledge(item) } label: {
                     HStack(spacing: 9) {
                         Circle()
                             .fill(actionColor(item.highestPriorityActiveApplication?.colorHex))
                             .frame(width: 8, height: 8)
+                            .accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 5) {
                             Text(item.title).lineLimit(1).foregroundStyle(.primary)
                             HStack(spacing: 5) {
@@ -248,24 +254,29 @@ struct MenuPopoverView: View {
                                 }
                             }
                         }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("\(item.repository), pull request \(item.pullRequestNumber ?? 0), \(item.title)")
+                        .accessibilityValue(item.applications.sorted { $0.ruleID.priority < $1.ruleID.priority }
+                            .map(\.labelName).joined(separator: ", "))
                         Spacer()
-                        Image(systemName: "arrow.up.right").font(.caption).foregroundStyle(.secondary)
+                        Button { model.acknowledge(item) } label: {
+                            Image(systemName: "arrow.up.right")
+                                .frame(width: 24, height: 24)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help("Open pull request #\(item.pullRequestNumber ?? 0)")
+                        .accessibilityLabel("Open pull request #\(item.pullRequestNumber ?? 0)")
+                        .accessibilityHint("Opens in your browser and marks its notification seen")
                     }
-                }
-                .buttonStyle(.plain)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(item.repository), pull request \(item.pullRequestNumber ?? 0), \(item.title)")
-                .accessibilityValue(item.applications.sorted { $0.ruleID.priority < $1.ruleID.priority }
-                    .map(\.labelName).joined(separator: ", "))
-                .accessibilityHint("Opens the pull request and marks its notification seen")
-                .background {
-                    GeometryReader { row in
-                        Color.clear.preference(
-                            key: AttentionFramePreferenceKey.self,
-                            value: [item.id: row.frame(in: .global)]
-                        )
+                    .background {
+                        GeometryReader { row in
+                            Color.clear.preference(
+                                key: AttentionFramePreferenceKey.self,
+                                value: [item.id: row.frame(in: .global)]
+                            )
+                        }
                     }
-                }
                 }
             }
         }

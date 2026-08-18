@@ -543,6 +543,45 @@ final class GitHubAPITests: XCTestCase {
         XCTAssertEqual(result.pullRequests.first?.applications.first?.labelEventID, "EVENT_1")
     }
 
+    func testRepositoryColorChangeRefreshesAnOlderKnownApplication() async throws {
+        var requestCount = 0
+        StubURLProtocol.handler = { request in
+            requestCount += 1
+            let payload: String
+            switch requestCount {
+            case 1:
+                payload = #"{"data":{"search":{"issueCount":0,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}"#
+            case 2:
+                payload = #"{"data":{"nodes":[{"id":"PR_1","number":1,"title":"Test","url":"https://github.com/Org/repo/pull/1","updatedAt":"2026-08-11T00:00:00Z","state":"OPEN","isDraft":false,"repository":{"nameWithOwner":"Org/repo"},"labels":{"pageInfo":{"hasNextPage":false,"endCursor":null,"hasPreviousPage":false,"startCursor":null},"nodes":[{"id":"LABEL_1","name":"action needed","color":"D93F0B"}]},"timelineItems":{"pageInfo":{"hasNextPage":false,"endCursor":null,"hasPreviousPage":true,"startCursor":"older"},"nodes":[]}}]}}"#
+            case 3:
+                payload = #"{"data":{"node":{"timelineItems":{"pageInfo":{"hasNextPage":false,"endCursor":null,"hasPreviousPage":false,"startCursor":null},"nodes":[{"__typename":"LabeledEvent","id":"EVENT_1","createdAt":"2026-08-01T00:00:00Z","label":{"id":"LABEL_1","name":"action needed","color":"D93F0B"}}]}}}}"#
+            case 4:
+                payload = #"{"data":{"node":{"updatedAt":"2026-08-11T00:00:00Z","state":"OPEN","repository":{"nameWithOwner":"Org/repo"},"labels":{"pageInfo":{"hasNextPage":false,"endCursor":null,"hasPreviousPage":false,"startCursor":null},"nodes":[{"id":"LABEL_1","name":"action needed","color":"D93F0B"}]}}}}"#
+            default:
+                XCTFail("Unexpected request after color revalidation")
+                payload = #"{"data":{}}"#
+            }
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(payload.utf8))
+        }
+        let appliedAt = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-01T00:00:00Z"))
+        let known = ActionLabelApplication(
+            pullRequestID: "PR_1", ruleID: .decide, labelID: "LABEL_1",
+            labelEventID: "EVENT_1", labelName: "action needed", colorHex: "B60205",
+            appliedAt: appliedAt, seenAt: appliedAt, dismissedAt: nil, deliveredAt: appliedAt
+        )
+        let api = GitHubAPI(token: "test", session: stubSession())
+
+        let result = try await api.actionPullRequests(
+            configuration: actionConfiguration(),
+            candidateIDs: ["PR_1"],
+            knownApplications: ["PR_1": ["LABEL_1": known]]
+        )
+
+        XCTAssertEqual(requestCount, 4)
+        XCTAssertEqual(result.pullRequests.first?.applications.first?.labelEventID, "EVENT_1")
+        XCTAssertEqual(result.pullRequests.first?.applications.first?.colorHex, "D93F0B")
+    }
+
     private func actionConfiguration() -> ActionNotificationConfiguration {
         ActionNotificationConfiguration(
             schemaVersion: ActionNotificationConfiguration.schemaVersion,
@@ -550,7 +589,8 @@ final class GitHubAPITests: XCTestCase {
             rules: [
                 ActionRuleConfiguration(id: .decide, labelName: "action needed", isEnabled: true),
                 ActionRuleConfiguration(id: .invokeR2, labelName: "", isEnabled: false),
-                ActionRuleConfiguration(id: .assignReviewer, labelName: "", isEnabled: false)
+                ActionRuleConfiguration(id: .assignReviewer, labelName: "", isEnabled: false),
+                ActionRuleConfiguration(id: .mergeable, labelName: "", isEnabled: false)
             ]
         )
     }

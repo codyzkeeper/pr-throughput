@@ -127,7 +127,7 @@ struct LiveE2E {
         try require(configuration.isConfigured, "action-only mode requires action-label configuration")
         try require(Set(rows.map(\.id)).count == rows.count, "duplicate action rows")
         try require(rows.allSatisfy {
-            !$0.applications.isEmpty && $0.url.scheme == "https" && $0.url.host == "github.com"
+            !$0.applications.isEmpty && GitHubPullRequestURL.isSafe($0.url)
         }, "invalid or unsafe action row")
         let applications = rows.flatMap(\.applications)
         try require(Set(applications.map(\.labelEventID)).count == applications.count, "duplicate label application IDs")
@@ -148,7 +148,7 @@ struct LiveE2E {
         try require(Set(snapshot.attentionItems.map(\.id)).count == snapshot.attentionItems.count, "duplicate action rows")
         try require(snapshot.attentionItems.allSatisfy {
             $0.kind == .actionLabels && !$0.applications.isEmpty
-                && $0.url.scheme == "https" && $0.url.host == "github.com"
+                && GitHubPullRequestURL.isSafe($0.url)
         }, "invalid or unsafe action row")
         let applications = snapshot.attentionItems.flatMap(\.applications)
         try require(Set(applications.map(\.labelEventID)).count == applications.count, "duplicate label application IDs")
@@ -181,14 +181,17 @@ struct LiveE2E {
         let names = [
             environment["PR_THROUGHPUT_ACTION_LABEL_1"] ?? "",
             environment["PR_THROUGHPUT_ACTION_LABEL_2"] ?? "",
-            environment["PR_THROUGHPUT_ACTION_LABEL_3"] ?? ""
+            environment["PR_THROUGHPUT_ACTION_LABEL_3"] ?? "",
+            environment["PR_THROUGHPUT_ACTION_LABEL_4"] ?? ""
         ]
         guard !organization.isEmpty else { return .blank }
         let rules = zip(ActionRuleID.allCases, names).map { id, name in
             ActionRuleConfiguration(id: id, labelName: name, isEnabled: !name.isEmpty)
         }
         return try ActionNotificationConfiguration(
-            schemaVersion: 1, organization: organization, rules: rules
+            schemaVersion: ActionNotificationConfiguration.schemaVersion,
+            organization: organization,
+            rules: rules
         ).validated()
     }
 
