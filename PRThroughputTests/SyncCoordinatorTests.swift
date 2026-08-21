@@ -20,6 +20,51 @@ final class SyncCoordinatorTests: XCTestCase {
         XCTAssertFalse(AppModel.shouldDisconnect(after: URLError(.notConnectedToInternet)))
     }
 
+    func testSyncHealthSurfacesActionFailureOverVerifiedSnapshot() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let health = AppModel.resolveSyncHealth(
+            dataVerified: true,
+            fullSyncDate: now,
+            actionSyncDate: now,
+            actionConfigured: true,
+            actionError: "GitHub returned an unreadable response.",
+            syncError: nil,
+            now: now
+        )
+
+        XCTAssertEqual(health, .actionError)
+    }
+
+    func testSyncHealthSurfacesStaleConfiguredActionLane() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let health = AppModel.resolveSyncHealth(
+            dataVerified: true,
+            fullSyncDate: now,
+            actionSyncDate: now.addingTimeInterval(-61),
+            actionConfigured: true,
+            actionError: nil,
+            syncError: nil,
+            now: now
+        )
+
+        XCTAssertEqual(health, .stale)
+    }
+
+    func testSyncHealthIsReconciledOnlyWhenEveryConfiguredLaneIsFresh() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let health = AppModel.resolveSyncHealth(
+            dataVerified: true,
+            fullSyncDate: now.addingTimeInterval(-599),
+            actionSyncDate: now.addingTimeInterval(-59),
+            actionConfigured: true,
+            actionError: nil,
+            syncError: nil,
+            now: now
+        )
+
+        XCTAssertEqual(health, .reconciled)
+    }
+
     func testTimelineCacheRequiresCurrentSchemaAndUnchangedPullRequest() {
         let updatedAt = Date(timeIntervalSince1970: 1_700_000_000)
         XCTAssertFalse(SyncCoordinator.canReuseTimeline(

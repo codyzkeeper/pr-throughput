@@ -4,6 +4,14 @@ import Foundation
 
 @MainActor
 final class AppModel: ObservableObject {
+    enum SyncHealth: Equatable {
+        case reconciled
+        case actionError
+        case syncError
+        case stale
+        case unverified
+    }
+
     enum ConnectionState: Equatable {
         case disconnected
         case authorizing
@@ -94,6 +102,63 @@ final class AppModel: ObservableObject {
     var isStale: Bool {
         guard let last = snapshot?.metadata.lastSuccessfulSync else { return false }
         return Date().timeIntervalSince(last) > 600
+    }
+
+    var isActionSyncStale: Bool {
+        guard actionConfiguration.isConfigured else { return false }
+        guard let last = snapshot?.metadata.lastSuccessfulActionLabelSync else { return true }
+        return Date().timeIntervalSince(last) > 60
+    }
+
+    var syncHealth: SyncHealth {
+        Self.resolveSyncHealth(
+            dataVerified: isDataVerified,
+            fullSyncDate: snapshot?.metadata.lastSuccessfulSync,
+            actionSyncDate: snapshot?.metadata.lastSuccessfulActionLabelSync,
+            actionConfigured: actionConfiguration.isConfigured,
+            actionError: snapshot?.metadata.lastActionLabelError,
+            syncError: snapshot?.metadata.lastError,
+            now: Date()
+        )
+    }
+
+    var syncHealthHelp: String {
+        switch syncHealth {
+        case .reconciled:
+            return "Source facts and all displayed metric equations passed reconciliation checks."
+        case .actionError:
+            let detail = snapshot?.metadata.lastActionLabelError ?? "The GitHub label notification refresh failed."
+            return "GitHub label notifications are showing the last verified state until refresh succeeds. (detail)"
+        case .syncError:
+            return snapshot?.metadata.lastError ?? "The latest GitHub sync failed. Previously verified totals are being shown."
+        case .stale:
+            return "One or more GitHub data lanes have not completed a recent successful sync."
+        case .unverified:
+            return "The app has not completed a verified sync yet."
+        }
+    }
+
+    nonisolated static func resolveSyncHealth(
+        dataVerified: Bool,
+        fullSyncDate: Date?,
+        actionSyncDate: Date?,
+        actionConfigured: Bool,
+        actionError: String?,
+        syncError: String?,
+        now: Date,
+        fullSyncStaleAfter: TimeInterval = 600,
+        actionSyncStaleAfter: TimeInterval = 60
+    ) -> SyncHealth {
+        if actionError != nil { return .actionError }
+        if syncError != nil { return .syncError }
+        guard dataVerified else { return .unverified }
+        guard let fullSyncDate,
+              now.timeIntervalSince(fullSyncDate) <= fullSyncStaleAfter else { return .stale }
+        if actionConfigured {
+            guard let actionSyncDate,
+                  now.timeIntervalSince(actionSyncDate) <= actionSyncStaleAfter else { return .stale }
+        }
+        return .reconciled
     }
 
     func start() async {

@@ -12,8 +12,8 @@ settings:
     SWIFT_VERSION: "6.0"
     MACOSX_DEPLOYMENT_TARGET: "14.0"
     CODE_SIGN_STYLE: Automatic
-    CURRENT_PROJECT_VERSION: 8
-    MARKETING_VERSION: 0.3.2
+    CURRENT_PROJECT_VERSION: 9
+    MARKETING_VERSION: 0.3.3
 targets:
   PRThroughput:
     type: application

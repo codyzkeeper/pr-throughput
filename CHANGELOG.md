@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.3 — 2026-08-22
+
+- Show action-label sync failures and stale data explicitly in the menu-bar status instead of reporting a verified snapshot as fully reconciled.
+- Treat configured action-label data as stale when it has not completed a successful refresh within one minute.
+
 ## 0.3.2 — 2026-08-17
 
 - Added a fourth configurable action-label rule for merge-ready pull requests.
