@@ -118,7 +118,8 @@ actor GitHubAPI {
     func actionPullRequests(
         configuration: ActionNotificationConfiguration,
         candidateIDs: Set<String>,
-        knownApplications: [String: [String: ActionLabelApplication]] = [:]
+        knownApplications: [String: [String: ActionLabelApplication]] = [:],
+        knownPullRequestUpdatedAt: [String: Date] = [:]
     ) async throws -> GitHubActionDiscovery {
         let configuration = try configuration.validated()
         guard !configuration.enabledRules.isEmpty else {
@@ -155,7 +156,8 @@ actor GitHubAPI {
                     try await directActionPullRequests(
                         ids: chunk,
                         configuration: configuration,
-                        knownApplications: knownApplications
+                        knownApplications: knownApplications,
+                        knownPullRequestUpdatedAt: knownPullRequestUpdatedAt
                     )
                 }
             }
@@ -176,7 +178,8 @@ actor GitHubAPI {
     private func directActionPullRequests(
         ids: [String],
         configuration: ActionNotificationConfiguration,
-        knownApplications: [String: [String: ActionLabelApplication]]
+        knownApplications: [String: [String: ActionLabelApplication]],
+        knownPullRequestUpdatedAt: [String: Date]
     ) async throws -> [GitHubActionPullRequest] {
         guard !ids.isEmpty else { return [] }
         let envelope: ActionNodesEnvelope = try await graphQL(
@@ -202,62 +205,36 @@ actor GitHubAPI {
             }
             guard !current.isEmpty else { continue }
 
-            var transitions = pull.timelineItems.nodes
-            var didPaginateTransitions = false
-            var cursor = pull.timelineItems.pageInfo.hasPreviousPage ? pull.timelineItems.pageInfo.startCursor : nil
             let knownByLabel = knownApplications[pull.id] ?? [:]
-            var unresolved = Set<String>()
-            for (rule, label) in current {
-                let latest = transitions
-                    .filter { $0.label.id == label.id }
-                    .max { $0.createdAt < $1.createdAt }
-                if let latest {
-                    guard latest.typeName == "LabeledEvent" else {
-                        // The direct label collection and the recent transition tail
-                        // disagree, so preserve the last verified state and retry.
-                        throw GitHubAPIError.invalidResponse
-                    }
-                    continue
-                }
-                guard let known = knownByLabel[label.id],
-                      known.ruleID == rule.id,
-                      known.labelName.caseInsensitiveCompare(label.name) == .orderedSame,
-                      known.normalizedColorHex == label.color.uppercased() else {
-                    unresolved.insert(label.id)
-                    continue
-                }
-                // A remove/reapply would produce a recent transition. If no event for
-                // this label is in the tail, the previously verified application is
-                // still current and older pagination is unnecessary.
+            let knownIdentityMatchesCurrent = current.allSatisfy { rule, label in
+                guard let known = knownByLabel[label.id] else { return false }
+                return known.ruleID == rule.id
+                    && known.labelName.caseInsensitiveCompare(label.name) == .orderedSame
             }
-            var seenCursors = Set<String>()
-            while !unresolved.isEmpty, let currentCursor = cursor {
-                didPaginateTransitions = true
-                guard seenCursors.insert(currentCursor).inserted else { throw GitHubAPIError.invalidResponse }
-                let page = try await actionTransitionPage(id: pull.id, before: currentCursor)
-                transitions.append(contentsOf: page.nodes)
-                unresolved.subtract(page.nodes.map { $0.label.id })
-                cursor = page.pageInfo.hasPreviousPage ? page.pageInfo.startCursor : nil
-            }
-            guard unresolved.isEmpty else { throw GitHubAPIError.invalidResponse }
-
-            if didPaginateTransitions {
-                let verify: ActionCurrentEnvelope = try await graphQL(
-                    query: Self.actionCurrentQuery,
-                    variables: ["id": pull.id]
-                )
-                guard let currentPull = verify.data.node,
-                      currentPull.updatedAt == pull.updatedAt,
-                      currentPull.state == pull.state,
-                      currentPull.repository.nameWithOwner == pull.repository.nameWithOwner,
-                      !currentPull.labels.pageInfo.hasNextPage,
-                      Set(currentPull.labels.nodes.map { "\($0.id)\0\($0.name)\0\($0.color)" })
-                        == Set(pull.labels.nodes.map { "\($0.id)\0\($0.name)\0\($0.color)" }) else {
-                    throw GitHubAPIError.invalidResponse
+            let sourceUnchanged = knownPullRequestUpdatedAt[pull.id] == pull.updatedAt
+            var transitions: [ActionLabelTransition] = []
+            let identityVerified = sourceUnchanged && knownIdentityMatchesCurrent
+            var transitionLookupSucceeded = false
+            if !identityVerified {
+                do {
+                    transitions = try await actionTransitions(
+                        id: pull.id,
+                        matching: Set(current.map { $0.1.id })
+                    )
+                    transitionLookupSucceeded = true
+                } catch GitHubAPIError.unauthorized {
+                    throw GitHubAPIError.unauthorized
+                } catch {
+                    // Current labels, not transition history, are the visibility
+                    // authority. A delayed or malformed timeline must not hide a
+                    // label or preserve a removed one. Leave the identity unverified
+                    // so a later poll retries the enrichment.
+                    transitions = []
                 }
             }
 
             var applications: [ActionLabelApplication] = []
+            var allApplicationsResolved = identityVerified || transitionLookupSucceeded
             for (rule, label) in current {
                 let latest = transitions
                     .filter { $0.label.id == label.id }
@@ -265,35 +242,46 @@ actor GitHubAPI {
                 guard label.color.range(of: #"^[0-9A-Fa-f]{6}$"#, options: .regularExpression) != nil else {
                     throw GitHubAPIError.invalidResponse
                 }
-                if latest == nil,
-                   let known = knownByLabel[label.id],
-                   known.ruleID == rule.id,
-                   known.labelName.caseInsensitiveCompare(label.name) == .orderedSame,
-                   known.normalizedColorHex == label.color.uppercased() {
-                    applications.append(ActionLabelApplication(
-                        pullRequestID: pull.id,
-                        ruleID: rule.id,
-                        labelID: label.id,
-                        labelEventID: known.labelEventID,
-                        labelName: label.name,
-                        colorHex: label.color.uppercased(),
-                        appliedAt: known.appliedAt,
-                        seenAt: nil,
-                        dismissedAt: nil
-                    ))
-                    continue
+                let known = knownByLabel[label.id].flatMap { application in
+                    application.ruleID == rule.id
+                        && application.labelName.caseInsensitiveCompare(label.name) == .orderedSame
+                        ? application : nil
                 }
-                guard let latest, latest.typeName == "LabeledEvent" else {
-                    throw GitHubAPIError.invalidResponse
+                let resolved: (eventID: String, appliedAt: Date)
+                if identityVerified, let known {
+                    resolved = (known.labelEventID, known.appliedAt)
+                } else if let latest, latest.typeName == "LabeledEvent" {
+                    if let known,
+                       latest.id == known.labelEventID
+                        || (known.labelEventID.hasPrefix("current:") && latest.createdAt <= known.appliedAt) {
+                        resolved = (known.labelEventID, known.appliedAt)
+                    } else {
+                        resolved = (latest.id, latest.createdAt)
+                    }
+                } else if let known {
+                    // GitHub occasionally serves an older UnlabeledEvent beside a
+                    // current label in large/replicated reads. Preserve the known
+                    // identity and retry, but never contradict current membership.
+                    resolved = (known.labelEventID, known.appliedAt)
+                    allApplicationsResolved = false
+                } else {
+                    // A deterministic provisional identity makes a newly discovered
+                    // current label visible immediately. It is upgraded only if a
+                    // later, newer application event proves a distinct generation.
+                    resolved = (
+                        "current:\(pull.id):\(label.id):\(pull.updatedAt.timeIntervalSince1970)",
+                        pull.updatedAt
+                    )
+                    allApplicationsResolved = false
                 }
                 applications.append(ActionLabelApplication(
                     pullRequestID: pull.id,
                     ruleID: rule.id,
                     labelID: label.id,
-                    labelEventID: latest.id,
+                    labelEventID: resolved.eventID,
                     labelName: label.name,
                     colorHex: label.color.uppercased(),
-                    appliedAt: latest.createdAt,
+                    appliedAt: resolved.appliedAt,
                     seenAt: nil,
                     dismissedAt: nil
                 ))
@@ -301,10 +289,35 @@ actor GitHubAPI {
             result.append(GitHubActionPullRequest(
                 id: pull.id, number: pull.number, title: pull.title, url: pull.url,
                 repository: pull.repository.nameWithOwner, updatedAt: pull.updatedAt,
-                applications: applications
+                applications: applications,
+                identityVerifiedAt: allApplicationsResolved ? pull.updatedAt : nil
             ))
         }
         return result
+    }
+
+    private func actionTransitions(
+        id: String,
+        matching labelIDs: Set<String>
+    ) async throws -> [ActionLabelTransition] {
+        let envelope: ActionTimelineEnvelope = try await graphQL(
+            query: Self.actionLatestTimelineQuery,
+            variables: ["id": id]
+        )
+        guard let node = envelope.data.node else { throw GitHubAPIError.invalidResponse }
+        var transitions = node.timelineItems.nodes
+        var unresolved = labelIDs.subtracting(transitions.map { $0.label.id })
+        var cursor = node.timelineItems.pageInfo.hasPreviousPage
+            ? node.timelineItems.pageInfo.startCursor : nil
+        var seenCursors = Set<String>()
+        while !unresolved.isEmpty, let currentCursor = cursor {
+            guard seenCursors.insert(currentCursor).inserted else { throw GitHubAPIError.invalidResponse }
+            let page = try await actionTransitionPage(id: id, before: currentCursor)
+            transitions.append(contentsOf: page.nodes)
+            unresolved.subtract(page.nodes.map { $0.label.id })
+            cursor = page.pageInfo.hasPreviousPage ? page.pageInfo.startCursor : nil
+        }
+        return transitions
     }
 
     private func actionTransitionPage(id: String, before: String) async throws -> ActionTimelineConnection {
@@ -704,6 +717,15 @@ actor GitHubAPI {
             pageInfo { hasNextPage endCursor hasPreviousPage startCursor }
             nodes { id name color }
           }
+        }
+      }
+    }
+    """#
+
+    private static let actionLatestTimelineQuery = #"""
+    query ActionPullRequestLatestTimeline($id: ID!) {
+      node(id: $id) {
+        ... on PullRequest {
           timelineItems(last: 100, itemTypes: [LABELED_EVENT, UNLABELED_EVENT]) {
             pageInfo { hasNextPage endCursor hasPreviousPage startCursor }
             nodes {
@@ -734,20 +756,6 @@ actor GitHubAPI {
     }
     """#
 
-    private static let actionCurrentQuery = #"""
-    query ActionPullRequestCurrent($id: ID!) {
-      node(id: $id) {
-        ... on PullRequest {
-          updatedAt state
-          repository { nameWithOwner }
-          labels(first: 100) {
-            pageInfo { hasNextPage endCursor hasPreviousPage startCursor }
-            nodes { id name color }
-          }
-        }
-      }
-    }
-    """#
 }
 
 private struct GraphQLErrors: Decodable { struct Item: Decodable { let message: String }; let errors: [Item] }
@@ -826,6 +834,7 @@ struct GitHubActionPullRequest: Sendable {
     let repository: String
     let updatedAt: Date
     let applications: [ActionLabelApplication]
+    let identityVerifiedAt: Date?
 }
 
 private struct ActionNodesEnvelope: Decodable {
@@ -839,17 +848,6 @@ private struct ActionTimelineEnvelope: Decodable {
     struct Node: Decodable { let timelineItems: ActionTimelineConnection }
 }
 
-private struct ActionCurrentEnvelope: Decodable {
-    let data: Body
-    struct Body: Decodable { let node: Node? }
-    struct Node: Decodable {
-        let updatedAt: Date
-        let state: String
-        let repository: GitHubPullRequestNode.Repository
-        let labels: ActionLabelConnection
-    }
-}
-
 private struct ActionPullRequestNode: Decodable {
     let id: String
     let number: Int
@@ -860,7 +858,6 @@ private struct ActionPullRequestNode: Decodable {
     let isDraft: Bool
     let repository: GitHubPullRequestNode.Repository
     let labels: ActionLabelConnection
-    let timelineItems: ActionTimelineConnection
 }
 
 private struct ActionLabelConnection: Decodable {

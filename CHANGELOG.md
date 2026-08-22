@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.4 — 2026-08-22
+
+- Make the current GitHub label collection the sole authority for action-notification visibility.
+- Fetch label-transition history separately and only when an application identity needs refreshing, avoiding inconsistent bulk timeline responses.
+- Keep current labels visible and retry identity enrichment when GitHub serves delayed or malformed timeline data instead of failing the entire action sync.
+- Remove stale rows immediately after their configured label disappears, without depending on label history.
+
+## 0.3.3 — 2026-08-22
+
+- Show action-label sync failures and stale data explicitly in the menu-bar status instead of reporting a verified snapshot as fully reconciled.
+- Treat configured action-label data as stale when it has not completed a successful refresh within one minute.
+
 ## 0.3.2 — 2026-08-17
 
 - Added a fourth configurable action-label rule for merge-ready pull requests.

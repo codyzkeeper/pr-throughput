@@ -202,13 +202,38 @@ struct MenuPopoverView: View {
             VStack(alignment: .trailing, spacing: 2) {
                 Text("@\(model.snapshot?.viewer.login ?? "")").font(.caption).fontWeight(.medium)
                 if let date = model.snapshot?.metadata.lastSuccessfulSync {
-                    Text(fullSyncText(date)).font(.caption2).foregroundStyle(model.isStale ? .orange : .secondary)
+                    Text(fullSyncText(date))
+                        .font(.caption2)
+                        .foregroundStyle(model.syncHealth == .reconciled ? Color.secondary : Color.orange)
                 }
-                if model.isDataVerified {
+                switch model.syncHealth {
+                case .reconciled:
                     Label("Reconciled", systemImage: "checkmark.seal.fill")
                         .font(.caption2)
                         .foregroundStyle(.green)
-                        .help("Source facts and all displayed metric equations passed reconciliation checks.")
+                        .help(model.syncHealthHelp)
+                case .actionError:
+                    Label("Action sync failed", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .help(model.syncHealthHelp)
+                case .syncError:
+                    Label("Sync failed", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .help(model.syncHealthHelp)
+                case .stale:
+                    Label("Sync stale", systemImage: "clock.badge.exclamationmark")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .help(model.syncHealthHelp)
+                case .unverified:
+                    Label("Verifying", systemImage: "clock.arrow.circlepath")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .help(model.syncHealthHelp)
                 }
             }
         }
