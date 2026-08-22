@@ -128,7 +128,7 @@ final class AppModel: ObservableObject {
             return "Source facts and all displayed metric equations passed reconciliation checks."
         case .actionError:
             let detail = snapshot?.metadata.lastActionLabelError ?? "The GitHub label notification refresh failed."
-            return "GitHub label notifications are showing the last verified state until refresh succeeds. (detail)"
+            return "GitHub label notifications are showing the last verified state until refresh succeeds. \(detail)"
         case .syncError:
             return snapshot?.metadata.lastError ?? "The latest GitHub sync failed. Previously verified totals are being shown."
         case .stale:
@@ -668,7 +668,8 @@ final class AppModel: ObservableObject {
                 number: item.pullRequestNumber ?? 0,
                 url: item.url,
                 applications: applications,
-                deliveredApplicationRevision: nil
+                deliveredApplicationRevision: nil,
+                sourceUpdatedAt: item.actionSourceUpdatedAt
             )
         }
         return merged

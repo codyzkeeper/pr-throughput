@@ -419,10 +419,18 @@ actor SyncCoordinator {
                 )
             }
         )
+        let knownPullRequestUpdatedAt = Dictionary(
+            uniqueKeysWithValues: priorItems.compactMap { item -> (String, Date)? in
+                guard let pullRequestID = item.pullRequestID,
+                      let updatedAt = item.actionSourceUpdatedAt else { return nil }
+                return (pullRequestID, updatedAt)
+            }
+        )
         let discovery = try await api.actionPullRequests(
             configuration: configuration,
             candidateIDs: candidateIDs,
-            knownApplications: knownApplications
+            knownApplications: knownApplications,
+            knownPullRequestUpdatedAt: knownPullRequestUpdatedAt
         )
         let priorByPull = Dictionary(
             uniqueKeysWithValues: priorItems.compactMap { item in item.pullRequestID.map { ($0, item) } }
@@ -440,7 +448,8 @@ actor SyncCoordinator {
                 number: pull.number,
                 url: pull.url,
                 applications: applications,
-                deliveredApplicationRevision: nil
+                deliveredApplicationRevision: nil,
+                sourceUpdatedAt: pull.identityVerifiedAt
             )
         }
         snapshot.metadata.lastSuccessfulActionLabelSync = now

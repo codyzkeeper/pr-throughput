@@ -34,6 +34,7 @@ struct AttentionItem: Codable, Hashable, Identifiable, Sendable {
     let pullRequestNumber: Int?
     var actionApplications: [ActionLabelApplication]?
     var deliveredApplicationRevision: String?
+    let actionSourceUpdatedAt: Date?
 
     init(
         id: String,
@@ -51,7 +52,8 @@ struct AttentionItem: Codable, Hashable, Identifiable, Sendable {
         pullRequestID: String? = nil,
         pullRequestNumber: Int? = nil,
         actionApplications: [ActionLabelApplication]? = nil,
-        deliveredApplicationRevision: String? = nil
+        deliveredApplicationRevision: String? = nil,
+        actionSourceUpdatedAt: Date? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -69,6 +71,7 @@ struct AttentionItem: Codable, Hashable, Identifiable, Sendable {
         self.pullRequestNumber = pullRequestNumber
         self.actionApplications = actionApplications
         self.deliveredApplicationRevision = deliveredApplicationRevision
+        self.actionSourceUpdatedAt = actionSourceUpdatedAt
     }
 
     var isVerifiedDirectMention: Bool {
@@ -141,7 +144,8 @@ struct AttentionItem: Codable, Hashable, Identifiable, Sendable {
         number: Int,
         url: URL,
         applications: [ActionLabelApplication],
-        deliveredApplicationRevision: String? = nil
+        deliveredApplicationRevision: String? = nil,
+        sourceUpdatedAt: Date? = nil
     ) -> AttentionItem {
         let revision = Self.actionRevision(applications)
         return AttentionItem(
@@ -150,7 +154,8 @@ struct AttentionItem: Codable, Hashable, Identifiable, Sendable {
             createdAt: applications.map(\.appliedAt).max() ?? .distantPast,
             revisionID: revision, pullRequestID: pullRequestID,
             pullRequestNumber: number, actionApplications: applications,
-            deliveredApplicationRevision: deliveredApplicationRevision
+            deliveredApplicationRevision: deliveredApplicationRevision,
+            actionSourceUpdatedAt: sourceUpdatedAt
         )
     }
 
