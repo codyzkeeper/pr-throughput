@@ -34,6 +34,20 @@ struct LiveE2E {
 
         let api = GitHubAPI(token: value)
         let viewer = try await api.viewer()
+        if options.labelCatalog {
+            let catalog = try await api.labelCatalog(organization: "Keeper-Dating")
+            let summary: [String: Any] = [
+                "account": viewer.login,
+                "organization": "Keeper-Dating",
+                "labels": catalog.count,
+                "repositoriesWithLabels": catalog.reduce(0) { $0 + $1.repositoryCount },
+                "rateRemaining": await api.rateState.remaining ?? -1
+            ]
+            let data = try JSONSerialization.data(withJSONObject: summary, options: [.sortedKeys])
+            FileHandle.standardOutput.write(data)
+            FileHandle.standardOutput.write(Data("\n".utf8))
+            return
+        }
         let actionConfiguration = try actionConfigurationFromEnvironment()
         if options.actionOnly {
             let candidateIDs = Set((ProcessInfo.processInfo.environment["PR_THROUGHPUT_ACTION_CANDIDATE_IDS"] ?? "")
@@ -177,17 +191,18 @@ struct LiveE2E {
 
     private static func actionConfigurationFromEnvironment() throws -> ActionNotificationConfiguration {
         let environment = ProcessInfo.processInfo.environment
-        let organization = environment["PR_THROUGHPUT_ACTION_ORGANIZATION"] ?? ""
-        let names = [
-            environment["PR_THROUGHPUT_ACTION_LABEL_1"] ?? "",
-            environment["PR_THROUGHPUT_ACTION_LABEL_2"] ?? "",
-            environment["PR_THROUGHPUT_ACTION_LABEL_3"] ?? "",
-            environment["PR_THROUGHPUT_ACTION_LABEL_4"] ?? ""
-        ]
-        guard !organization.isEmpty else { return .blank }
-        let rules = zip(ActionRuleID.allCases, names).map { id, name in
-            ActionRuleConfiguration(id: id, labelName: name, isEnabled: !name.isEmpty)
+        let organization = environment["PR_THROUGHPUT_ACTION_ORGANIZATION"] ?? "Keeper-Dating"
+        let rawRules = environment["PR_THROUGHPUT_ACTION_LABELS"] ?? ""
+        let rules = rawRules.split(separator: ",", omittingEmptySubsequences: true).compactMap { token -> ActionLabelRuleConfiguration? in
+            let parts = token.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+            let name = String(parts[0]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { return nil }
+            let level = parts.count == 2
+                ? NotificationLevel(rawValue: String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) ?? .persistent
+                : .persistent
+            return ActionLabelRuleConfiguration(labelName: name, notificationLevel: level)
         }
+        guard !organization.isEmpty else { return .blank }
         return try ActionNotificationConfiguration(
             schemaVersion: ActionNotificationConfiguration.schemaVersion,
             organization: organization,
@@ -202,25 +217,30 @@ struct LiveE2E {
     private struct Options {
         let canonicalMetrics: Bool
         let actionOnly: Bool
+        let labelCatalog: Bool
 
         init(arguments: [String]) throws {
             var canonicalMetrics = false
             var actionOnly = false
+            var labelCatalog = false
             for argument in arguments {
                 switch argument {
                 case "--canonical-metrics":
                     canonicalMetrics = true
                 case "--action-only":
                     actionOnly = true
+                case "--label-catalog":
+                    labelCatalog = true
                 default:
                     throw LiveE2EError.invalidArguments("Unknown argument: \(argument)")
                 }
             }
-            guard !(canonicalMetrics && actionOnly) else {
-                throw LiveE2EError.invalidArguments("Choose either --canonical-metrics or --action-only.")
+            guard [canonicalMetrics, actionOnly, labelCatalog].filter({ $0 }).count <= 1 else {
+                throw LiveE2EError.invalidArguments("Choose only one of --canonical-metrics, --action-only, or --label-catalog.")
             }
             self.canonicalMetrics = canonicalMetrics
             self.actionOnly = actionOnly
+            self.labelCatalog = labelCatalog
         }
     }
 }

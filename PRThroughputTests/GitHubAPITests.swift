@@ -8,6 +8,48 @@ final class GitHubAPITests: XCTestCase {
         super.tearDown()
     }
 
+    func testLabelCatalogCoversAllOrganizationRepositoriesAndDeduplicatesByName() async throws {
+        StubURLProtocol.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test")
+            let path = request.url?.path ?? ""
+            let payload: String
+            var headers: [String: String]? = nil
+            if path == "/orgs/Keeper-Dating/repos" {
+                if request.url?.query?.contains("page=2") == true {
+                    payload = #"[{"full_name":"Keeper-Dating/beta"}]"#
+                } else {
+                    payload = #"[{"full_name":"Keeper-Dating/alpha"}]"#
+                    headers = ["Link": "<https://api.github.com/orgs/Keeper-Dating/repos?type=all&per_page=100&sort=full_name&page=2>; rel=\"next\""]
+                }
+            } else if path == "/repos/Keeper-Dating/alpha/labels" {
+                if request.url?.query?.contains("page=2") == true {
+                    payload = #"[{"name":"shared","color":"123456"}]"#
+                } else {
+                    payload = #"[{"name":"cody: decide","color":"B60205"}]"#
+                    headers = ["Link": "<https://api.github.com/repos/Keeper-Dating/alpha/labels?per_page=100&page=2>; rel=\"next\""]
+                }
+            } else if path == "/repos/Keeper-Dating/beta/labels" {
+                payload = #"[{"name":"CODY: DECIDE","color":"D93F0B"},{"name":"other","color":"654321"}]"#
+            } else {
+                XCTFail("Unexpected catalog URL: \(request.url?.absoluteString ?? "nil")")
+                payload = "[]"
+            }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: headers)!
+            return (response, Data(payload.utf8))
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let api = GitHubAPI(token: "test", session: URLSession(configuration: configuration))
+
+        let catalog = try await api.labelCatalog(organization: "keeper-dating")
+
+        XCTAssertEqual(catalog.map(\.key), ["cody: decide", "other", "shared"])
+        let decide = try XCTUnwrap(catalog.first { $0.key == "cody: decide" })
+        XCTAssertEqual(decide.name, "cody: decide")
+        XCTAssertEqual(decide.colors, ["B60205", "D93F0B"])
+        XCTAssertEqual(decide.repositoryCount, 2)
+    }
+
     func testAuthenticatedReadsBypassLocalResponseCaches() async throws {
         StubURLProtocol.handler = { request in
             XCTAssertEqual(request.cachePolicy, .reloadIgnoringLocalCacheData)
@@ -741,12 +783,9 @@ final class GitHubAPITests: XCTestCase {
     private func actionConfiguration() -> ActionNotificationConfiguration {
         ActionNotificationConfiguration(
             schemaVersion: ActionNotificationConfiguration.schemaVersion,
-            organization: "Org",
+            organization: "Keeper-Dating",
             rules: [
-                ActionRuleConfiguration(id: .decide, labelName: "action needed", isEnabled: true),
-                ActionRuleConfiguration(id: .invokeR2, labelName: "", isEnabled: false),
-                ActionRuleConfiguration(id: .assignReviewer, labelName: "", isEnabled: false),
-                ActionRuleConfiguration(id: .mergeable, labelName: "", isEnabled: false)
+                ActionLabelRuleConfiguration(labelName: "action needed")
             ]
         )
     }

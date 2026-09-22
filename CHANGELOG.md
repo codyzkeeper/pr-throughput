@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Replaced the fixed action-label set with a live `Keeper-Dating` label catalog.
+- Added per-label Loud, Persistent, and Quiet notification configuration with migration from existing fixed rules.
+- Preserved GitHub label presence as the visibility authority, including unavailable configured labels and current repository colors.
+- Added catalog pagination, deduplication, and settings search while retaining the existing sync cadence and notification state semantics.
+
 ## 0.3.4 — 2026-08-22
 
 - Make the current GitHub label collection the sole authority for action-notification visibility.

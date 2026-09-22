@@ -11,14 +11,18 @@ final class ActionNotificationTests: XCTestCase {
 
     func testConfigurationRejectsUnsafeInputsAndBuildsQuotedSearches() throws {
         var configuration = ActionNotificationConfiguration.blank
-        configuration.organization = "Example-Organization"
-        configuration.rules[0].labelName = "owner: decide"
-        configuration.rules[0].isEnabled = true
+        configuration.organization = "keeper-dating"
+        configuration.rules = [ActionLabelRuleConfiguration(labelName: "owner: decide")]
 
         XCTAssertNoThrow(try configuration.validated())
         let query = try configuration.searchQuery(for: configuration.rules[0])
-        XCTAssertEqual(query, "org:Example-Organization is:pr is:open label:\"owner: decide\"")
+        XCTAssertEqual(query, "org:Keeper-Dating is:pr is:open label:\"owner: decide\"")
         XCTAssertFalse(query.contains(#"\""#), "GitHub search quotes must not contain literal escape slashes")
+
+        configuration.rules = [ActionLabelRuleConfiguration(labelName: "owner: \"decide\" \\\\ now")]
+        XCTAssertNoThrow(try configuration.validated())
+        let escapedQuery = try configuration.searchQuery(for: configuration.rules[0])
+        XCTAssertTrue(escapedQuery.contains(#"label:\"owner: \"decide\" \\\\ now\"#))
 
         configuration.organization = "Bad Organization\norg:other"
         XCTAssertThrowsError(try configuration.validated())
@@ -37,31 +41,29 @@ final class ActionNotificationTests: XCTestCase {
         XCTAssertEqual(ActionNotificationConfiguration.load(defaults: suite), try value.validated())
         XCTAssertEqual(reordered.revision, value.revision)
         XCTAssertTrue(ActionNotificationConfiguration.blank.organization.isEmpty)
-        XCTAssertTrue(ActionNotificationConfiguration.blank.rules.allSatisfy { !$0.isEnabled && $0.labelName.isEmpty })
+        XCTAssertTrue(ActionNotificationConfiguration.blank.rules.isEmpty)
     }
 
     func testLegacyThreeRuleConfigurationMigratesWithoutAddingPersonalDefaults() throws {
         let suiteName = "ActionNotificationTests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { suite.removePersistentDomain(forName: suiteName) }
-        let legacy = ActionNotificationConfiguration(
-            schemaVersion: 1,
-            organization: "Example-Organization",
-            rules: [
-                ActionRuleConfiguration(id: .decide, labelName: "owner: decide", isEnabled: true),
-                ActionRuleConfiguration(id: .invokeR2, labelName: "owner: invoke", isEnabled: true),
-                ActionRuleConfiguration(id: .assignReviewer, labelName: "owner: assign", isEnabled: true)
+        let legacy: [String: Any] = [
+            "schemaVersion": 1,
+            "organization": "Keeper-Dating",
+            "rules": [
+                ["id": "decide", "labelName": "owner: decide", "isEnabled": true],
+                ["id": "invokeR2", "labelName": "owner: invoke", "isEnabled": true],
+                ["id": "assignReviewer", "labelName": "owner: assign", "isEnabled": true]
             ]
-        )
-        suite.set(try JSONEncoder().encode(legacy), forKey: ActionNotificationConfiguration.storageKey)
+        ]
+        suite.set(try JSONSerialization.data(withJSONObject: legacy), forKey: ActionNotificationConfiguration.storageKey)
 
         let migrated = ActionNotificationConfiguration.load(defaults: suite)
 
         XCTAssertEqual(migrated.schemaVersion, ActionNotificationConfiguration.schemaVersion)
-        XCTAssertEqual(migrated.rules.map(\.id), ActionRuleID.allCases)
-        XCTAssertEqual(migrated.rules.first(where: { $0.id == .decide })?.labelName, "owner: decide")
-        XCTAssertEqual(migrated.rules.first(where: { $0.id == .mergeable })?.labelName, "")
-        XCTAssertEqual(migrated.rules.first(where: { $0.id == .mergeable })?.isEnabled, false)
+        XCTAssertEqual(migrated.rules.map(\.labelName), ["owner: assign", "owner: decide", "owner: invoke"])
+        XCTAssertTrue(migrated.rules.allSatisfy { $0.notificationLevel == .persistent })
         XCTAssertTrue(migrated.isConfigured)
     }
 
@@ -69,32 +71,45 @@ final class ActionNotificationTests: XCTestCase {
         let suiteName = "ActionNotificationTests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { suite.removePersistentDomain(forName: suiteName) }
-        let malformed = ActionNotificationConfiguration(
-            schemaVersion: 1,
-            organization: "Example-Organization",
-            rules: [
-                ActionRuleConfiguration(id: .decide, labelName: "owner: decide", isEnabled: true),
-                ActionRuleConfiguration(id: .invokeR2, labelName: "owner: invoke", isEnabled: true),
-                ActionRuleConfiguration(id: .mergeable, labelName: "owner: mergeable", isEnabled: true)
-            ]
-        )
-        suite.set(try JSONEncoder().encode(malformed), forKey: ActionNotificationConfiguration.storageKey)
+        let malformed: [String: Any] = [
+            "schemaVersion": 1,
+            "organization": "Keeper-Dating",
+            "rules": ["not": "an array"]
+        ]
+        suite.set(try JSONSerialization.data(withJSONObject: malformed), forKey: ActionNotificationConfiguration.storageKey)
 
         XCTAssertEqual(ActionNotificationConfiguration.load(defaults: suite), .blank)
     }
 
     func testMergeableRuleHasLowestPriorityAndBuildsAQuotedSearch() throws {
         var configuration = ActionNotificationConfiguration.blank
-        configuration.organization = "Example-Organization"
-        let mergeableIndex = try XCTUnwrap(configuration.rules.firstIndex { $0.id == .mergeable })
-        configuration.rules[mergeableIndex].labelName = "owner: mergeable"
-        configuration.rules[mergeableIndex].isEnabled = true
+        configuration.organization = "Keeper-Dating"
+        configuration.rules = [ActionLabelRuleConfiguration(labelName: "owner: mergeable")]
 
-        XCTAssertEqual(ActionRuleID.mergeable.priority, 3)
+        XCTAssertEqual(NotificationLevel.persistent.priority, 1)
         XCTAssertEqual(
-            try configuration.searchQuery(for: configuration.rules[mergeableIndex]),
-            "org:Example-Organization is:pr is:open label:\"owner: mergeable\""
+            try configuration.searchQuery(for: configuration.rules[0]),
+            "org:Keeper-Dating is:pr is:open label:\"owner: mergeable\""
         )
+    }
+
+    func testArbitraryLabelsAreCaseInsensitiveAndDuplicateNamesAreRejected() throws {
+        var configuration = ActionNotificationConfiguration(
+            schemaVersion: ActionNotificationConfiguration.schemaVersion,
+            organization: "Keeper-Dating",
+            rules: [
+                ActionLabelRuleConfiguration(labelName: " Deploy ", notificationLevel: .loud),
+                ActionLabelRuleConfiguration(labelName: "review", notificationLevel: .quiet)
+            ]
+        )
+        let validated = try configuration.validated()
+        XCTAssertEqual(validated.rules.map(\.id), ["deploy", "review"])
+        XCTAssertEqual(validated.rules.first?.notificationLevel, .loud)
+
+        configuration.rules.append(ActionLabelRuleConfiguration(labelName: "DEPLOY"))
+        XCTAssertThrowsError(try configuration.validated()) { error in
+            XCTAssertEqual(error as? ActionConfigurationError, .invalidRules)
+        }
     }
 
     func testActionRowsAggregateApplicationsAndPrioritizeUnseenColor() {
@@ -514,12 +529,10 @@ final class ActionNotificationTests: XCTestCase {
 
     private func configured() -> ActionNotificationConfiguration {
         ActionNotificationConfiguration(
-            schemaVersion: ActionNotificationConfiguration.schemaVersion, organization: "Org",
+            schemaVersion: ActionNotificationConfiguration.schemaVersion, organization: "Keeper-Dating",
             rules: [
-                ActionRuleConfiguration(id: .decide, labelName: "action needed", isEnabled: true),
-                ActionRuleConfiguration(id: .invokeR2, labelName: "", isEnabled: false),
-                ActionRuleConfiguration(id: .assignReviewer, labelName: "", isEnabled: false),
-                ActionRuleConfiguration(id: .mergeable, labelName: "", isEnabled: false)
+                ActionLabelRuleConfiguration(labelName: "action needed", notificationLevel: .persistent),
+                ActionLabelRuleConfiguration(labelName: "owner: mergeable", notificationLevel: .quiet)
             ]
         )
     }

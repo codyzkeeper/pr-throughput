@@ -267,7 +267,12 @@ struct MenuPopoverView: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
-                                ForEach(item.applications.sorted { $0.ruleID.priority < $1.ruleID.priority }) { application in
+                                ForEach(item.applications.sorted {
+                                    if $0.notificationLevel.priority != $1.notificationLevel.priority {
+                                        return $0.notificationLevel.priority < $1.notificationLevel.priority
+                                    }
+                                    return ActionLabelRuleConfiguration.key(for: $0.labelName) < ActionLabelRuleConfiguration.key(for: $1.labelName)
+                                }) { application in
                                     Text(application.labelName)
                                         .font(.caption2)
                                         .lineLimit(1)
@@ -281,7 +286,12 @@ struct MenuPopoverView: View {
                         }
                         .accessibilityElement(children: .ignore)
                         .accessibilityLabel("\(item.repository), pull request \(item.pullRequestNumber ?? 0), \(item.title)")
-                        .accessibilityValue(item.applications.sorted { $0.ruleID.priority < $1.ruleID.priority }
+                        .accessibilityValue(item.applications.sorted {
+                            if $0.notificationLevel.priority != $1.notificationLevel.priority {
+                                return $0.notificationLevel.priority < $1.notificationLevel.priority
+                            }
+                            return ActionLabelRuleConfiguration.key(for: $0.labelName) < ActionLabelRuleConfiguration.key(for: $1.labelName)
+                        }
                             .map(\.labelName).joined(separator: ", "))
                         Spacer()
                         Button { model.acknowledge(item) } label: {

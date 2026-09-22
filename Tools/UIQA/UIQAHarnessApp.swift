@@ -9,12 +9,12 @@ struct UIQAHarnessApp: App {
         setenv("XCTestConfigurationFilePath", "PRThroughputUIQA", 1)
         let actionConfiguration = ActionNotificationConfiguration(
             schemaVersion: ActionNotificationConfiguration.schemaVersion,
-            organization: "Example-Organization",
+            organization: "Keeper-Dating",
             rules: [
-                ActionRuleConfiguration(id: .decide, labelName: "owner: decide", isEnabled: true),
-                ActionRuleConfiguration(id: .invokeR2, labelName: "owner: invoke R2", isEnabled: true),
-                ActionRuleConfiguration(id: .assignReviewer, labelName: "owner: assign reviewer", isEnabled: true),
-                ActionRuleConfiguration(id: .mergeable, labelName: "owner: mergeable", isEnabled: true)
+                ActionLabelRuleConfiguration(labelName: "owner: decide", notificationLevel: .persistent),
+                ActionLabelRuleConfiguration(labelName: "owner: invoke R2", notificationLevel: .persistent),
+                ActionLabelRuleConfiguration(labelName: "owner: assign reviewer", notificationLevel: .persistent),
+                ActionLabelRuleConfiguration(labelName: "owner: mergeable", notificationLevel: .persistent)
             ]
         )
         let model = AppModel(

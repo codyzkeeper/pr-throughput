@@ -6,6 +6,7 @@ struct SettingsView: View {
     @AppStorage("notification.merged.enabled") private var merged = true
     @State private var actionDraft: ActionNotificationConfiguration
     @State private var actionError: String?
+    @State private var labelSearch = ""
 
     init(model: AppModel) {
         self.model = model
@@ -19,19 +20,85 @@ struct SettingsView: View {
                 Toggle("PR merged — quiet", isOn: $merged)
             }
             Section("Action labels") {
-                TextField("GitHub organization", text: $actionDraft.organization)
-                    .textFieldStyle(.roundedBorder)
-                Text("An open pull request appears in Needs attention while it has an enabled label.")
+                Text("Choose labels from accessible Keeper-Dating repositories and set how each one notifies you.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                ForEach(actionDraft.rules.indices, id: \.self) { index in
-                    HStack {
-                        Toggle(actionDraft.rules[index].id.displayName, isOn: $actionDraft.rules[index].isEnabled)
-                            .frame(width: 155, alignment: .leading)
-                        TextField("GitHub label", text: $actionDraft.rules[index].labelName)
-                            .textFieldStyle(.roundedBorder)
+                HStack {
+                    TextField("Search GitHub labels", text: $labelSearch)
+                        .textFieldStyle(.roundedBorder)
+                    Button {
+                        Task { await model.refreshLabelCatalog() }
+                    } label: {
+                        if model.isLoadingLabelCatalog {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                        }
                     }
-                    .help("Priority \(index + 1). The menu-bar dot uses this label's color from GitHub.")
+                    .buttonStyle(.borderless)
+                    .help("Refresh labels from GitHub")
+                }
+                if let error = model.labelCatalogError {
+                    Text("Label catalog unavailable: \(error)")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                if actionDraft.rules.isEmpty {
+                    Text("No labels selected.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(actionDraft.rules) { rule in
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(color(for: rule))
+                                .frame(width: 10, height: 10)
+                            Text(rule.labelName)
+                                .lineLimit(1)
+                            if !isAvailable(rule) {
+                                Text("Unavailable")
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                            }
+                            Spacer()
+                            Picker("Notification", selection: binding(for: rule.id).notificationLevel) {
+                                ForEach(NotificationLevel.allCases, id: \.self) { level in
+                                    Text(level.displayName).tag(level)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(width: 110)
+                            Button { remove(rule.id) } label: {
+                                Image(systemName: "minus.circle")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Remove label")
+                        }
+                    }
+                }
+                let available = filteredCatalog
+                if !available.isEmpty {
+                    Text("Available labels")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    ForEach(available) { entry in
+                        Button { addOrRemove(entry) } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: isSelected(entry) ? "checkmark.square.fill" : "square")
+                                Circle().fill(color(for: entry)).frame(width: 10, height: 10)
+                                Text(entry.name).lineLimit(1)
+                                Spacer()
+                                Text("\(entry.repositoryCount) repos")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                } else if model.labelCatalog.isEmpty && !model.isLoadingLabelCatalog {
+                    Text("No labels loaded yet. Refresh after signing in.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 if let actionError {
                     Text(actionError).font(.caption).foregroundStyle(.red)
@@ -80,7 +147,8 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 520, height: 650)
+        .frame(width: 560, height: 700)
+        .task { await model.refreshLabelCatalog() }
     }
 
     private var actionState: String {
@@ -100,5 +168,58 @@ struct SettingsView: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(label)
             .accessibilityValue(value)
+    }
+
+    private var filteredCatalog: [GitHubLabelCatalogEntry] {
+        let query = labelSearch.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return model.labelCatalog.filter { query.isEmpty || $0.name.lowercased().contains(query) }
+    }
+
+    private func isSelected(_ entry: GitHubLabelCatalogEntry) -> Bool {
+        actionDraft.rules.contains { $0.id == entry.key }
+    }
+
+    private func isAvailable(_ rule: ActionLabelRuleConfiguration) -> Bool {
+        model.labelCatalog.contains { $0.key == rule.id }
+    }
+
+    private func binding(for id: String) -> Binding<ActionLabelRuleConfiguration> {
+        Binding(
+            get: { actionDraft.rules.first(where: { $0.id == id }) ?? ActionLabelRuleConfiguration(labelName: "", notificationLevel: .persistent) },
+            set: { updated in
+                guard let index = actionDraft.rules.firstIndex(where: { $0.id == id }) else { return }
+                actionDraft.rules[index] = updated
+            }
+        )
+    }
+
+    private func addOrRemove(_ entry: GitHubLabelCatalogEntry) {
+        if let index = actionDraft.rules.firstIndex(where: { $0.id == entry.key }) {
+            actionDraft.rules.remove(at: index)
+        } else {
+            actionDraft.rules.append(ActionLabelRuleConfiguration(labelName: entry.name))
+            actionDraft.rules.sort { $0.id < $1.id }
+        }
+    }
+
+    private func remove(_ id: String) {
+        actionDraft.rules.removeAll { $0.id == id }
+    }
+
+    private func color(for rule: ActionLabelRuleConfiguration) -> Color {
+        color(for: model.labelCatalog.first { $0.key == rule.id }?.colorHex)
+    }
+
+    private func color(for entry: GitHubLabelCatalogEntry) -> Color {
+        color(for: entry.colorHex)
+    }
+
+    private func color(for hex: String?) -> Color {
+        guard let hex, let value = Int(hex, radix: 16) else { return .secondary }
+        return Color(
+            red: Double((value >> 16) & 0xFF) / 255,
+            green: Double((value >> 8) & 0xFF) / 255,
+            blue: Double(value & 0xFF) / 255
+        )
     }
 }

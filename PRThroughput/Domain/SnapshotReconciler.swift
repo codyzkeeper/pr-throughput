@@ -51,7 +51,7 @@ enum SnapshotReconciler {
                 if item.revisionID != AttentionItem.actionRevision(item.applications) {
                     issues.append("Action-label row revision does not match its applications.")
                 }
-                appendDuplicateIssue(item.applications.map { $0.ruleID.rawValue }, label: "action rule in one PR row", to: &issues)
+                appendDuplicateIssue(item.applications.map(\.labelKey), label: "action label in one PR row", to: &issues)
                 for application in item.applications {
                     if application.pullRequestID != pullRequestID {
                         issues.append("Action-label application references a different PR.")
@@ -60,7 +60,8 @@ enum SnapshotReconciler {
                         issues.append("Action-label application has an invalid label color.")
                     }
                     if let configuredRules,
-                       configuredRules[application.ruleID] != application.labelName.lowercased() {
+                       configuredRules[application.labelKey] != application.labelName.lowercased(),
+                       !application.labelKey.hasPrefix("legacy:") {
                         issues.append("Action-label application does not match the active configuration.")
                     }
                 }

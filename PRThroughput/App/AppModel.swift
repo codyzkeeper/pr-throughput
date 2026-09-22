@@ -32,6 +32,9 @@ final class AppModel: ObservableObject {
     @Published var transientKind: TransientEventKind?
     @Published private(set) var notificationAuthorizationStatus = "Checking…"
     @Published private(set) var actionConfiguration: ActionNotificationConfiguration
+    @Published private(set) var labelCatalog: [GitHubLabelCatalogEntry] = []
+    @Published private(set) var isLoadingLabelCatalog = false
+    @Published private(set) var labelCatalogError: String?
     @Published private(set) var isDataVerified = false
     @Published private(set) var isPopoverPresented = false
     @Published var oauthClientID: String {
@@ -86,9 +89,11 @@ final class AppModel: ObservableObject {
     }
 
     var unacknowledgedItems: [AttentionItem] {
-        (snapshot?.attentionItems.filter(\.isActive) ?? []).sorted { lhs, rhs in
-            let left = lhs.applications.map(\.ruleID.priority).min() ?? .max
-            let right = rhs.applications.map(\.ruleID.priority).min() ?? .max
+        (snapshot?.attentionItems.filter { item in
+            item.isActive && item.applications.contains { $0.notificationLevel == .persistent }
+        } ?? []).sorted { lhs, rhs in
+            let left = lhs.applications.map(\.notificationLevel.priority).min() ?? .max
+            let right = rhs.applications.map(\.notificationLevel.priority).min() ?? .max
             if left != right { return left < right }
             if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt }
             return (lhs.repository, lhs.pullRequestNumber ?? 0) < (rhs.repository, rhs.pullRequestNumber ?? 0)
@@ -96,7 +101,9 @@ final class AppModel: ObservableObject {
     }
 
     var unseenItems: [AttentionItem] {
-        snapshot?.attentionItems.filter(\.isUnseen) ?? []
+        snapshot?.attentionItems.filter { item in
+            item.isUnseen && item.applications.contains { $0.notificationLevel == .persistent && $0.isUnseen }
+        } ?? []
     }
 
     var isStale: Bool {
@@ -436,6 +443,19 @@ final class AppModel: ObservableObject {
         Task { await refreshActionsOnly() }
     }
 
+    func refreshLabelCatalog() async {
+        guard let coordinator, connectionState == .connected else { return }
+        guard !isLoadingLabelCatalog else { return }
+        isLoadingLabelCatalog = true
+        defer { isLoadingLabelCatalog = false }
+        do {
+            labelCatalog = try await coordinator.labelCatalog(organization: "Keeper-Dating")
+            labelCatalogError = nil
+        } catch {
+            labelCatalogError = error.localizedDescription
+        }
+    }
+
     func signOut() {
         signInTask?.cancel()
         refreshLoop?.cancel()
@@ -456,6 +476,8 @@ final class AppModel: ObservableObject {
         do { try snapshotStore?.deleteAll() } catch { signOutErrors.append(error.localizedDescription) }
         notifications.removeAll()
         snapshot = nil
+        labelCatalog = []
+        labelCatalogError = nil
         isDataVerified = false
         transientKind = nil
         errorMessage = signOutErrors.isEmpty ? nil : "Sign-out cleanup was incomplete: \(signOutErrors.joined(separator: " "))"
@@ -511,6 +533,9 @@ final class AppModel: ObservableObject {
         guard activeSessionID == sessionID else { return }
         await refreshActionsOnly()
         guard activeSessionID == sessionID else { return }
+        Task { @MainActor [weak self] in
+            await self?.refreshLabelCatalog()
+        }
         startRefreshLoop()
         startActionRefreshLoop()
     }

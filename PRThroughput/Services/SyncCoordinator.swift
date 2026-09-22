@@ -14,6 +14,10 @@ actor SyncCoordinator {
         self.api = api
     }
 
+    func labelCatalog(organization: String = "Keeper-Dating") async throws -> [GitHubLabelCatalogEntry] {
+        try await api.labelCatalog(organization: organization)
+    }
+
     /// Recent timeline queries return a suffix whose positions restart at zero.
     /// Rebase that suffix against any overlapping cached event before replacing it,
     /// so equal-timestamp ordering remains stable between full and fast refreshes.
