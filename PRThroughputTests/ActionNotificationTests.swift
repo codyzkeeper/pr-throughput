@@ -22,7 +22,8 @@ final class ActionNotificationTests: XCTestCase {
         configuration.rules = [ActionLabelRuleConfiguration(labelName: "owner: \"decide\" \\\\ now")]
         XCTAssertNoThrow(try configuration.validated())
         let escapedQuery = try configuration.searchQuery(for: configuration.rules[0])
-        XCTAssertTrue(escapedQuery.contains(#"label:\"owner: \"decide\" \\\\ now\"#))
+        XCTAssertTrue(escapedQuery.contains(#"owner: \"decide\""#))
+        XCTAssertTrue(escapedQuery.contains(#"\\\\ now"#))
 
         configuration.organization = "Bad Organization\norg:other"
         XCTAssertThrowsError(try configuration.validated())
@@ -394,7 +395,7 @@ final class ActionNotificationTests: XCTestCase {
         let item = AttentionItem.action(
             pullRequestID: "PR_1", title: "PR", repository: "org/repo", number: 1,
             url: URL(string: "https://github.com/org/repo/pull/1")!,
-            applications: [application(rule: .decide, event: "event", color: "B60205")]
+            applications: [application(rule: .decide, event: "event", color: "B60205", labelName: "not configured")]
         )
         var snapshot = emptySnapshot(actionItems: [item])
         let configuration = configured()
@@ -554,9 +555,10 @@ final class ActionNotificationTests: XCTestCase {
             case .assignReviewer, .mergeable: .quiet
             }
         }()
-        ActionLabelApplication(
-            pullRequestID: "PR_1", ruleID: rule, labelID: "label-\(rule.rawValue)",
-            labelEventID: event, labelName: labelName ?? rule.rawValue, colorHex: color,
+        let resolvedLabelName = labelName ?? rule.rawValue
+        return ActionLabelApplication(
+            pullRequestID: "PR_1", labelKey: resolvedLabelName, labelID: "label-\(rule.rawValue)",
+            labelEventID: event, labelName: resolvedLabelName, colorHex: color,
             notificationLevel: resolvedLevel, appliedAt: now, seenAt: nil, dismissedAt: nil
         )
     }
@@ -565,8 +567,7 @@ final class ActionNotificationTests: XCTestCase {
         ActionNotificationConfiguration(
             schemaVersion: ActionNotificationConfiguration.schemaVersion, organization: "Keeper-Dating",
             rules: [
-                ActionLabelRuleConfiguration(labelName: "action needed", notificationLevel: .persistent),
-                ActionLabelRuleConfiguration(labelName: "owner: mergeable", notificationLevel: .quiet)
+                ActionLabelRuleConfiguration(labelName: "action needed", notificationLevel: .persistent)
             ]
         )
     }

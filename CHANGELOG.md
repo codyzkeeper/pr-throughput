@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1 — 2026-09-22
+
+- Replaced the derived snapshot cache's SwiftData dependency with an atomic Foundation JSON store so startup and tests do not depend on the SwiftData macro plugin.
+- Added a cross-instance file-backed persistence regression test and fixed the action-notification test helper for Swift 6 compilation.
+
 ## 0.4.0 — 2026-09-22
 
 - Replaced the fixed action-label set with a live `Keeper-Dating` label catalog.

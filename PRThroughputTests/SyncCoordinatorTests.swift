@@ -329,14 +329,15 @@ final class SyncCoordinatorTests: XCTestCase {
     }
 
     func testNotificationPollCreatesOnlyUnreadVerifiedDirectMention() async throws {
+        let recent = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-60))
         StubURLProtocol.handler = { request in
             let path = request.url!.path
             let payload: String
             switch path {
             case "/notifications":
-                payload = #"[{"id":"27","unread":true,"reason":"mention","updated_at":"2026-08-06T18:00:00Z","subject":{"title":"Needs a decision","url":"https://api.github.com/repos/o/r/pulls/27","latest_comment_url":"https://api.github.com/repos/o/r/issues/comments/99","type":"PullRequest"},"repository":{"full_name":"o/r","html_url":"https://github.com/o/r"}},{"id":"28","unread":true,"reason":"assign","updated_at":"2026-08-06T18:00:00Z","subject":{"title":"Assigned only","url":"https://api.github.com/repos/o/r/pulls/28","latest_comment_url":null,"type":"PullRequest"},"repository":{"full_name":"o/r","html_url":"https://github.com/o/r"}},{"id":"29","unread":false,"reason":"mention","updated_at":"2026-08-06T18:00:00Z","subject":{"title":"Already read","url":"https://api.github.com/repos/o/r/pulls/29","latest_comment_url":null,"type":"PullRequest"},"repository":{"full_name":"o/r","html_url":"https://github.com/o/r"}}]"#
+                payload = #"[{"id":"27","unread":true,"reason":"mention","updated_at":"\#(recent)","subject":{"title":"Needs a decision","url":"https://api.github.com/repos/o/r/pulls/27","latest_comment_url":"https://api.github.com/repos/o/r/issues/comments/99","type":"PullRequest"},"repository":{"full_name":"o/r","html_url":"https://github.com/o/r"}},{"id":"28","unread":true,"reason":"assign","updated_at":"\#(recent)","subject":{"title":"Assigned only","url":"https://api.github.com/repos/o/r/pulls/28","latest_comment_url":null,"type":"PullRequest"},"repository":{"full_name":"o/r","html_url":"https://github.com/o/r"}},{"id":"29","unread":false,"reason":"mention","updated_at":"\#(recent)","subject":{"title":"Already read","url":"https://api.github.com/repos/o/r/pulls/29","latest_comment_url":null,"type":"PullRequest"},"repository":{"full_name":"o/r","html_url":"https://github.com/o/r"}}]"#
             case "/repos/o/r/issues/comments/99":
-                payload = #"{"id":99,"body":"@me please decide","user":{"login":"alice"},"created_at":"2026-08-06T18:00:00Z","updated_at":"2026-08-06T18:00:00Z","submitted_at":null}"#
+                payload = #"{"id":99,"body":"@me please decide","user":{"login":"alice"},"created_at":"\#(recent)","updated_at":"\#(recent)","submitted_at":null}"#
             default:
                 return (HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!, Data())
             }
@@ -359,8 +360,11 @@ final class SyncCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(updated.attentionItems.map(\.id), ["thread:27"])
         XCTAssertEqual(newItems.map(\.id), ["thread:27"])
-        XCTAssertTrue(updated.attentionItems[0].isUnseen)
-        XCTAssertTrue(updated.attentionItems[0].revisionID?.hasPrefix("issueComment:99:") == true)
+        guard let item = updated.attentionItems.first else {
+            return XCTFail("Expected verified mention; error=\(updated.metadata.lastError as Any)")
+        }
+        XCTAssertTrue(item.isUnseen)
+        XCTAssertTrue(item.revisionID?.hasPrefix("issueComment:99:") == true)
     }
 
     func testNotificationPollDoesNotUseUnrelatedCommentToVerifyLatestSource() async throws {
@@ -434,14 +438,15 @@ final class SyncCoordinatorTests: XCTestCase {
     }
 
     func testNotificationVerificationFailureDoesNotAdvanceCursor() async throws {
+        let recent = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-60))
         let cursor = Date(timeIntervalSince1970: 1_786_000_000)
         StubURLProtocol.handler = { request in
             if request.url?.path == "/notifications" {
-                let payload = #"[{"id":"27","unread":true,"reason":"mention","updated_at":"2026-08-06T18:00:00Z","subject":{"title":"Cannot verify","url":"https://api.github.com/repos/o/r/pulls/27","latest_comment_url":"https://api.github.com/repos/o/r/issues/comments/99","type":"PullRequest"},"repository":{"full_name":"o/r","html_url":"https://github.com/o/r"}},{"id":"28","unread":true,"reason":"mention","updated_at":"2026-08-06T18:00:00Z","subject":{"title":"Can verify","url":"https://api.github.com/repos/o/r/pulls/28","latest_comment_url":"https://api.github.com/repos/o/r/comments/100","type":"PullRequest"},"repository":{"full_name":"o/r","html_url":"https://github.com/o/r"}}]"#
+                let payload = #"[{"id":"27","unread":true,"reason":"mention","updated_at":"\#(recent)","subject":{"title":"Cannot verify","url":"https://api.github.com/repos/o/r/pulls/27","latest_comment_url":"https://api.github.com/repos/o/r/issues/comments/99","type":"PullRequest"},"repository":{"full_name":"o/r","html_url":"https://github.com/o/r"}},{"id":"28","unread":true,"reason":"mention","updated_at":"\#(recent)","subject":{"title":"Can verify","url":"https://api.github.com/repos/o/r/pulls/28","latest_comment_url":"https://api.github.com/repos/o/r/comments/100","type":"PullRequest"},"repository":{"full_name":"o/r","html_url":"https://github.com/o/r"}}]"#
                 return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(payload.utf8))
             }
             if request.url?.path == "/repos/o/r/comments/100" {
-                let payload = #"{"id":100,"body":"@me decide","user":{"login":"alice"},"created_at":"2026-08-06T18:00:00Z","updated_at":"2026-08-06T18:00:00Z","submitted_at":null}"#
+                let payload = #"{"id":100,"body":"@me decide","user":{"login":"alice"},"created_at":"\#(recent)","updated_at":"\#(recent)","submitted_at":null}"#
                 return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(payload.utf8))
             }
             let payload = #"{"message":"temporary failure"}"#

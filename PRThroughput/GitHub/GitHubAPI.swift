@@ -74,7 +74,8 @@ actor GitHubAPI {
         guard organization.caseInsensitiveCompare("Keeper-Dating") == .orderedSame else {
             throw GitHubAPIError.invalidResponse
         }
-        var repoURL = URLComponents(string: "https://api.github.com/orgs/\(organization)/repos")!
+        let canonicalOrganization = "Keeper-Dating"
+        var repoURL = URLComponents(string: "https://api.github.com/orgs/\(canonicalOrganization)/repos")!
         repoURL.queryItems = [
             URLQueryItem(name: "type", value: "all"),
             URLQueryItem(name: "per_page", value: "100"),
@@ -1128,7 +1129,7 @@ struct GitHubNotificationThread: Decodable, Sendable {
 struct GitHubComment: Decodable, Sendable {
     let id: Int
     let body: String
-    let htmlURL: URL
+    let htmlURL: URL?
     enum CodingKeys: String, CodingKey { case id, body, htmlURL = "html_url" }
 }
 

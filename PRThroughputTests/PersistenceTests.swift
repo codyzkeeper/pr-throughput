@@ -71,6 +71,37 @@ final class PersistenceTests: XCTestCase {
         XCTAssertNil(try store.load(accountID: viewer.id))
     }
 
+    func testFileBackedStoreRoundTripsAcrossInstances() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pr-throughput-snapshot-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appendingPathComponent("snapshots.json")
+        let viewer = GitHubUser(id: "disk-viewer", login: "me", kind: .user)
+        let snapshot = AppSnapshot(viewer: viewer, pullRequests: [], events: [], handoffs: [], assignedPullRequestIDs: ["pr-1"], attentionItems: [], metadata: .empty)
+
+        try SnapshotStore(storageURL: fileURL).save(snapshot)
+        let reloaded = try SnapshotStore(storageURL: fileURL).load(accountID: viewer.id)
+
+        XCTAssertEqual(reloaded?.assignedPullRequestIDs, ["pr-1"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fileURL.path))
+    }
+
+    func testCorruptFileBackedCacheFailsClosedAndCanBeRebuilt() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pr-throughput-corrupt-(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fileURL = directory.appendingPathComponent("snapshots.json")
+        try Data("not-json".utf8).write(to: fileURL)
+
+        let store = try SnapshotStore(storageURL: fileURL)
+        XCTAssertNil(try store.load(accountID: "missing"))
+
+        let viewer = GitHubUser(id: "rebuilt", login: "me", kind: .user)
+        try store.save(AppSnapshot(viewer: viewer, pullRequests: [], events: [], handoffs: [], assignedPullRequestIDs: [], attentionItems: [], metadata: .empty))
+        XCTAssertNotNil(try SnapshotStore(storageURL: fileURL).load(accountID: viewer.id))
+    }
+
     func testLegacyMetadataWithoutTimelineSchemaStillDecodes() throws {
         let data = Data(#"{"lastSuccessfulSync":null,"lastNotificationSync":null,"lastError":null,"rateState":{"remaining":null,"resetAt":null},"baselineEstablished":true}"#.utf8)
         let metadata = try JSONDecoder().decode(SyncMetadata.self, from: data)

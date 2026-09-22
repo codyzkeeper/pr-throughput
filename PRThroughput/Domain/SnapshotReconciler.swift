@@ -60,8 +60,7 @@ enum SnapshotReconciler {
                         issues.append("Action-label application has an invalid label color.")
                     }
                     if let configuredRules,
-                       configuredRules[application.labelKey] != application.labelName.lowercased(),
-                       !application.labelKey.hasPrefix("legacy:") {
+                       configuredRules[application.labelKey] != application.labelName.lowercased() {
                         issues.append("Action-label application does not match the active configuration.")
                     }
                 }
