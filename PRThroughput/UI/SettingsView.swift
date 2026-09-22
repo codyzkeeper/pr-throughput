@@ -27,7 +27,7 @@ struct SettingsView: View {
                     TextField("Search GitHub labels", text: $labelSearch)
                         .textFieldStyle(.roundedBorder)
                     Button {
-                        Task { await model.refreshLabelCatalog() }
+                        Task { await model.refreshLabelCatalog(force: true) }
                     } label: {
                         if model.isLoadingLabelCatalog {
                             ProgressView().controlSize(.small)

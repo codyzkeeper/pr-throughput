@@ -53,6 +53,7 @@ final class AppModel: ObservableObject {
     private var activeSessionID: UUID?
     private var activeSyncID: UUID?
     private var activeActionSyncID: UUID?
+    private var labelCatalogSessionID: UUID?
     private var hasStarted = false
 
     convenience init() {
@@ -89,9 +90,7 @@ final class AppModel: ObservableObject {
     }
 
     var unacknowledgedItems: [AttentionItem] {
-        (snapshot?.attentionItems.filter { item in
-            item.isActive && item.applications.contains { $0.notificationLevel == .persistent }
-        } ?? []).sorted { lhs, rhs in
+        (snapshot?.attentionItems.filter(Self.isVisibleInAttentionFeed) ?? []).sorted { lhs, rhs in
             let left = lhs.applications.map(\.notificationLevel.priority).min() ?? .max
             let right = rhs.applications.map(\.notificationLevel.priority).min() ?? .max
             if left != right { return left < right }
@@ -101,9 +100,19 @@ final class AppModel: ObservableObject {
     }
 
     var unseenItems: [AttentionItem] {
-        snapshot?.attentionItems.filter { item in
-            item.isUnseen && item.applications.contains { $0.notificationLevel == .persistent && $0.isUnseen }
-        } ?? []
+        snapshot?.attentionItems.filter(Self.hasUnseenAttention) ?? []
+    }
+
+    nonisolated static func isVisibleInAttentionFeed(_ item: AttentionItem) -> Bool {
+        guard item.isActive else { return false }
+        guard item.kind == .actionLabels else { return true }
+        return item.applications.contains { $0.notificationLevel == .persistent }
+    }
+
+    nonisolated static func hasUnseenAttention(_ item: AttentionItem) -> Bool {
+        guard item.isUnseen else { return false }
+        guard item.kind == .actionLabels else { return true }
+        return item.applications.contains { $0.notificationLevel == .persistent && $0.isUnseen }
     }
 
     var isStale: Bool {
@@ -352,7 +361,9 @@ final class AppModel: ObservableObject {
 
     func acknowledgeAll() {
         guard var updated = snapshot else { return }
-        let activeIndices = updated.attentionItems.indices.filter { updated.attentionItems[$0].isActive }
+        let activeIndices = updated.attentionItems.indices.filter {
+            Self.isVisibleInAttentionFeed(updated.attentionItems[$0])
+        }
         let notificationIDs = activeIndices.map {
             systemNotificationID(for: updated.attentionItems[$0], accountID: updated.viewer.id)
         }
@@ -443,15 +454,20 @@ final class AppModel: ObservableObject {
         Task { await refreshActionsOnly() }
     }
 
-    func refreshLabelCatalog() async {
-        guard let coordinator, connectionState == .connected else { return }
+    func refreshLabelCatalog(force: Bool = false) async {
+        guard let coordinator, let sessionID = activeSessionID, connectionState == .connected else { return }
         guard !isLoadingLabelCatalog else { return }
+        if !force, labelCatalogSessionID == sessionID { return }
         isLoadingLabelCatalog = true
         defer { isLoadingLabelCatalog = false }
         do {
-            labelCatalog = try await coordinator.labelCatalog(organization: "Keeper-Dating")
+            let catalog = try await coordinator.labelCatalog(organization: "Keeper-Dating")
+            guard activeSessionID == sessionID, connectionState == .connected else { return }
+            labelCatalog = catalog
+            labelCatalogSessionID = sessionID
             labelCatalogError = nil
         } catch {
+            guard activeSessionID == sessionID, connectionState == .connected else { return }
             labelCatalogError = error.localizedDescription
         }
     }
@@ -477,6 +493,7 @@ final class AppModel: ObservableObject {
         notifications.removeAll()
         snapshot = nil
         labelCatalog = []
+        labelCatalogSessionID = nil
         labelCatalogError = nil
         isDataVerified = false
         transientKind = nil

@@ -41,13 +41,22 @@ actor GitHubAPI {
     private(set) var rateState = GitHubRateState(remaining: nil, resetAt: nil)
     private(set) var notificationPollInterval: TimeInterval = 60
 
-    init(token: String, session: URLSession = .shared, retryBaseDelay: TimeInterval = 0.5) {
+    init(token: String, session: URLSession? = nil, retryBaseDelay: TimeInterval = 0.5) {
         self.token = token
-        self.session = session
+        self.session = session ?? Self.makeSession()
         self.retryBaseDelay = retryBaseDelay
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         self.decoder = decoder
+    }
+
+    private static func makeSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.waitsForConnectivity = false
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 60
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: configuration)
     }
 
     func viewer() async throws -> GitHubUser {
@@ -73,18 +82,27 @@ actor GitHubAPI {
         ]
         var repositories: [GitHubRepositorySummary] = []
         var nextRepositoryURL: URL? = repoURL.url
+        var seenRepositoryURLs = Set<URL>()
         while let url = nextRepositoryURL {
+            guard seenRepositoryURLs.insert(url).inserted, seenRepositoryURLs.count <= 100 else {
+                throw GitHubAPIError.invalidResponse
+            }
             let page: GitHubRESTPage<[GitHubRepositorySummary]> = try await restGETPage(url: url)
             repositories.append(contentsOf: page.value)
             nextRepositoryURL = page.next
         }
 
         var entries: [String: GitHubLabelCatalogEntry] = [:]
+        var repositoriesByLabel: [String: Set<String>] = [:]
         for repository in repositories {
             var labelsURL = URLComponents(string: "https://api.github.com/repos/\(repository.fullName)/labels")!
             labelsURL.queryItems = [URLQueryItem(name: "per_page", value: "100")]
             var nextLabelsURL: URL? = labelsURL.url
+            var seenLabelURLs = Set<URL>()
             while let url = nextLabelsURL {
+                guard seenLabelURLs.insert(url).inserted, seenLabelURLs.count <= 100 else {
+                    throw GitHubAPIError.invalidResponse
+                }
                 let page: GitHubRESTPage<[GitHubRESTLabel]> = try await restGETPage(url: url)
                 for label in page.value {
                     let key = ActionLabelRuleConfiguration.key(for: label.name)
@@ -92,7 +110,10 @@ actor GitHubAPI {
                         key: key, name: label.name, colors: [], repositoryCount: 0
                     )
                     entry.colors.insert(label.color.uppercased())
-                    entry.repositoryCount += 1
+                    let repositoryKey = repository.fullName.lowercased()
+                    if repositoriesByLabel[key, default: []].insert(repositoryKey).inserted {
+                        entry.repositoryCount += 1
+                    }
                     entries[key] = entry
                 }
                 nextLabelsURL = page.next
@@ -166,18 +187,25 @@ actor GitHubAPI {
             return GitHubActionDiscovery(pullRequests: [], searchDisagreementCount: 0)
         }
 
-        let searchResults = try await withThrowingTaskGroup(
-            of: [GitHubPullRequestNode].self,
-            returning: [[GitHubPullRequestNode]].self
-        ) { group in
-            for rule in configuration.enabledRules {
-                group.addTask { [self] in
-                    try await searchPullRequests(query: configuration.searchQuery(for: rule))
+        // Keep arbitrary user-selected label sets from creating an unbounded
+        // burst of concurrent Search API calls. Six lanes preserve responsive
+        // refreshes while leaving headroom for the rest of the sync pipeline.
+        var searchResults: [[GitHubPullRequestNode]] = []
+        for batch in configuration.enabledRules.chunked(into: 6) {
+            let pages = try await withThrowingTaskGroup(
+                of: [GitHubPullRequestNode].self,
+                returning: [[GitHubPullRequestNode]].self
+            ) { group in
+                for rule in batch {
+                    group.addTask { [self] in
+                        try await searchPullRequests(query: configuration.searchQuery(for: rule))
+                    }
                 }
+                var results: [[GitHubPullRequestNode]] = []
+                for try await page in group { results.append(page) }
+                return results
             }
-            var pages: [[GitHubPullRequestNode]] = []
-            for try await page in group { pages.append(page) }
-            return pages
+            searchResults.append(contentsOf: pages)
         }
         var searchNodes: [String: GitHubPullRequestNode] = [:]
         for result in searchResults {
@@ -187,23 +215,27 @@ actor GitHubAPI {
         }
         let allIDs = Set(searchNodes.keys).union(candidateIDs)
         let chunks = allIDs.sorted().chunked(into: 20)
-        let direct = try await withThrowingTaskGroup(
-            of: [GitHubActionPullRequest].self,
-            returning: [GitHubActionPullRequest].self
-        ) { group in
-            for chunk in chunks {
-                group.addTask { [self] in
-                    try await directActionPullRequests(
-                        ids: chunk,
-                        configuration: configuration,
-                        knownApplications: knownApplications,
-                        knownPullRequestUpdatedAt: knownPullRequestUpdatedAt
-                    )
+        var direct: [GitHubActionPullRequest] = []
+        for batch in chunks.chunked(into: 6) {
+            let pulls = try await withThrowingTaskGroup(
+                of: [GitHubActionPullRequest].self,
+                returning: [[GitHubActionPullRequest]].self
+            ) { group in
+                for chunk in batch {
+                    group.addTask { [self] in
+                        try await directActionPullRequests(
+                            ids: chunk,
+                            configuration: configuration,
+                            knownApplications: knownApplications,
+                            knownPullRequestUpdatedAt: knownPullRequestUpdatedAt
+                        )
+                    }
                 }
+                var results: [[GitHubActionPullRequest]] = []
+                for try await result in group { results.append(result) }
+                return results
             }
-            var pulls: [GitHubActionPullRequest] = []
-            for try await result in group { pulls.append(contentsOf: result) }
-            return pulls
+            direct.append(contentsOf: pulls.flatMap { $0 })
         }
 
         let directIDs = Set(direct.map(\.id))

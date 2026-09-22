@@ -32,14 +32,13 @@ struct ActionLabelRuleConfiguration: Codable, Equatable, Identifiable, Sendable 
     var notificationLevel: NotificationLevel
 
     init(id: String? = nil, labelName: String, notificationLevel: NotificationLevel = .persistent) {
-        let name = labelName.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.id = id ?? Self.key(for: name)
-        self.labelName = name
+        self.id = id ?? Self.key(for: labelName)
+        self.labelName = labelName
         self.notificationLevel = notificationLevel
     }
 
     static func key(for labelName: String) -> String {
-        labelName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        labelName.lowercased()
     }
 }
 
@@ -101,9 +100,8 @@ struct ActionNotificationConfiguration: Codable, Equatable, Sendable {
         var copy = self
         var enabledNames = Set<String>()
         for index in copy.rules.indices {
-            copy.rules[index].labelName = copy.rules[index].labelName.trimmingCharacters(in: .whitespacesAndNewlines)
             let value = copy.rules[index].labelName
-            guard !value.isEmpty, value.count <= 100,
+            guard !value.isEmpty, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, value.count <= 100,
                   value.rangeOfCharacter(from: .controlCharacters) == nil else {
                 throw ActionConfigurationError.invalidLabel
             }
@@ -288,6 +286,7 @@ struct ActionLabelApplication: Codable, Hashable, Identifiable, Sendable {
         labelEventID: String,
         labelName: String,
         colorHex: String,
+        notificationLevel: NotificationLevel = .persistent,
         appliedAt: Date,
         seenAt: Date?,
         dismissedAt: Date?,
@@ -300,7 +299,7 @@ struct ActionLabelApplication: Codable, Hashable, Identifiable, Sendable {
             labelEventID: labelEventID,
             labelName: labelName,
             colorHex: colorHex,
-            notificationLevel: .persistent,
+            notificationLevel: notificationLevel,
             appliedAt: appliedAt,
             seenAt: seenAt,
             dismissedAt: dismissedAt,

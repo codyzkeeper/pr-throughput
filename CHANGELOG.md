@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-09-22
 
 - Replaced the fixed action-label set with a live `Keeper-Dating` label catalog.
 - Added per-label Loud, Persistent, and Quiet notification configuration with migration from existing fixed rules.

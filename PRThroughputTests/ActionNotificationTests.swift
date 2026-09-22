@@ -98,7 +98,7 @@ final class ActionNotificationTests: XCTestCase {
             schemaVersion: ActionNotificationConfiguration.schemaVersion,
             organization: "Keeper-Dating",
             rules: [
-                ActionLabelRuleConfiguration(labelName: " Deploy ", notificationLevel: .loud),
+                ActionLabelRuleConfiguration(labelName: "Deploy", notificationLevel: .loud),
                 ActionLabelRuleConfiguration(labelName: "review", notificationLevel: .quiet)
             ]
         )
@@ -130,6 +130,32 @@ final class ActionNotificationTests: XCTestCase {
         XCTAssertEqual(item.highestPriorityUnseenApplication?.colorHex, "B60205")
         XCTAssertTrue(item.isActive)
         XCTAssertTrue(item.isUnseen)
+    }
+
+    func testAttentionFeedKeepsLegacyAttentionKindsAndFiltersNonPersistentActionLabels() {
+        let quietAction = AttentionItem.action(
+            pullRequestID: "quiet", title: "Quiet", repository: "org/repo", number: 1,
+            url: URL(string: "https://github.com/org/repo/pull/1")!,
+            applications: [application(rule: .decide, event: "quiet", color: "B60205", level: .quiet)]
+        )
+        let persistentAction = AttentionItem.action(
+            pullRequestID: "persistent", title: "Persistent", repository: "org/repo", number: 2,
+            url: URL(string: "https://github.com/org/repo/pull/2")!,
+            applications: [application(rule: .decide, event: "persistent", color: "B60205", level: .persistent)]
+        )
+        let mention = AttentionItem(
+            id: "mention", kind: .mention, level: .quiet, title: "Mention", repository: "org/repo",
+            url: URL(string: "https://github.com/org/repo/pull/3")!, createdAt: now,
+            revisionID: "mention-revision", verificationVersion: AttentionItem.directMentionVerificationVersion,
+            pullRequestID: "mention", pullRequestNumber: 3
+        )
+
+        XCTAssertFalse(AppModel.isVisibleInAttentionFeed(quietAction))
+        XCTAssertTrue(AppModel.isVisibleInAttentionFeed(persistentAction))
+        XCTAssertTrue(AppModel.isVisibleInAttentionFeed(mention))
+        XCTAssertFalse(AppModel.hasUnseenAttention(quietAction))
+        XCTAssertTrue(AppModel.hasUnseenAttention(persistentAction))
+        XCTAssertTrue(AppModel.hasUnseenAttention(mention))
     }
 
     func testPresentationStateOnlyCarriesAcrossIdenticalEventIDs() {
@@ -518,12 +544,20 @@ final class ActionNotificationTests: XCTestCase {
         rule: ActionRuleID,
         event: String,
         color: String,
-        labelName: String? = nil
+        labelName: String? = nil,
+        level: NotificationLevel? = nil
     ) -> ActionLabelApplication {
+        let resolvedLevel = level ?? {
+            switch rule {
+            case .decide: .loud
+            case .invokeR2: .persistent
+            case .assignReviewer, .mergeable: .quiet
+            }
+        }()
         ActionLabelApplication(
             pullRequestID: "PR_1", ruleID: rule, labelID: "label-\(rule.rawValue)",
             labelEventID: event, labelName: labelName ?? rule.rawValue, colorHex: color,
-            appliedAt: now, seenAt: nil, dismissedAt: nil
+            notificationLevel: resolvedLevel, appliedAt: now, seenAt: nil, dismissedAt: nil
         )
     }
 

@@ -23,7 +23,7 @@ final class GitHubAPITests: XCTestCase {
                 }
             } else if path == "/repos/Keeper-Dating/alpha/labels" {
                 if request.url?.query?.contains("page=2") == true {
-                    payload = #"[{"name":"shared","color":"123456"}]"#
+                    payload = #"[{"name":"cody: decide","color":"AAAAAA"},{"name":"shared","color":"123456"}]"#
                 } else {
                     payload = #"[{"name":"cody: decide","color":"B60205"}]"#
                     headers = ["Link": "<https://api.github.com/repos/Keeper-Dating/alpha/labels?per_page=100&page=2>; rel=\"next\""]
@@ -46,7 +46,7 @@ final class GitHubAPITests: XCTestCase {
         XCTAssertEqual(catalog.map(\.key), ["cody: decide", "other", "shared"])
         let decide = try XCTUnwrap(catalog.first { $0.key == "cody: decide" })
         XCTAssertEqual(decide.name, "cody: decide")
-        XCTAssertEqual(decide.colors, ["B60205", "D93F0B"])
+        XCTAssertEqual(decide.colors, ["AAAAAA", "B60205", "D93F0B"])
         XCTAssertEqual(decide.repositoryCount, 2)
     }
 
