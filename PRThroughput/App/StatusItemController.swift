@@ -131,8 +131,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         )
         if !model.unseenItems.isEmpty {
             let dotColor = model.unseenItems.compactMap(\.highestPriorityUnseenApplication).min {
-                if $0.ruleID.priority != $1.ruleID.priority { return $0.ruleID.priority < $1.ruleID.priority }
-                return $0.appliedAt > $1.appliedAt
+                if $0.notificationLevel.priority != $1.notificationLevel.priority { return $0.notificationLevel.priority < $1.notificationLevel.priority }
+                return ActionLabelRuleConfiguration.key(for: $0.labelName) < ActionLabelRuleConfiguration.key(for: $1.labelName)
             }.flatMap { NSColor(actionHex: $0.colorHex) } ?? .systemRed
             title.append(NSAttributedString(
                 string: "  ●",
@@ -197,7 +197,12 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         let assigned = "\(model.assignedCount) open pull requests assigned to you"
         guard attentionCount > 0 else { return assigned }
         let highest = model.unseenItems.compactMap(\.highestPriorityUnseenApplication)
-            .min { $0.ruleID.priority < $1.ruleID.priority }?.labelName
+            .min {
+                if $0.notificationLevel.priority != $1.notificationLevel.priority {
+                    return $0.notificationLevel.priority < $1.notificationLevel.priority
+                }
+                return ActionLabelRuleConfiguration.key(for: $0.labelName) < ActionLabelRuleConfiguration.key(for: $1.labelName)
+            }?.labelName
         return "\(assigned), \(attentionCount) unseen action\(attentionCount == 1 ? "" : "s")\(highest.map { ", highest priority \($0)" } ?? "")"
     }
 

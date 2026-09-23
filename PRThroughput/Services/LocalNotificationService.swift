@@ -45,8 +45,15 @@ final class LocalNotificationService {
         content.body = item.title
         content.userInfo = ["url": item.url.absoluteString]
         content.threadIdentifier = item.repository
-        content.sound = nil
-        content.interruptionLevel = .passive
+        switch application.notificationLevel {
+        case .loud:
+            content.sound = .default
+            content.interruptionLevel = .timeSensitive
+            NSApplication.shared.requestUserAttention(.criticalRequest)
+        case .persistent, .quiet:
+            content.sound = nil
+            content.interruptionLevel = .passive
+        }
         do {
             try await center.add(UNNotificationRequest(
                 identifier: ActionNotificationIdentifier.value(accountID: accountID, pullRequestID: pullRequestID),

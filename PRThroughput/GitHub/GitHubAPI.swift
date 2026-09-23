@@ -41,13 +41,22 @@ actor GitHubAPI {
     private(set) var rateState = GitHubRateState(remaining: nil, resetAt: nil)
     private(set) var notificationPollInterval: TimeInterval = 60
 
-    init(token: String, session: URLSession = .shared, retryBaseDelay: TimeInterval = 0.5) {
+    init(token: String, session: URLSession? = nil, retryBaseDelay: TimeInterval = 0.5) {
         self.token = token
-        self.session = session
+        self.session = session ?? Self.makeSession()
         self.retryBaseDelay = retryBaseDelay
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         self.decoder = decoder
+    }
+
+    private static func makeSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.waitsForConnectivity = false
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 60
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: configuration)
     }
 
     func viewer() async throws -> GitHubUser {
@@ -59,6 +68,59 @@ actor GitHubAPI {
             variables: [:]
         )
         return GitHubUser(id: envelope.data.viewer.id, login: envelope.data.viewer.login, kind: .user)
+    }
+
+    func labelCatalog(organization: String) async throws -> [GitHubLabelCatalogEntry] {
+        guard organization.caseInsensitiveCompare("Keeper-Dating") == .orderedSame else {
+            throw GitHubAPIError.invalidResponse
+        }
+        let canonicalOrganization = "Keeper-Dating"
+        var repoURL = URLComponents(string: "https://api.github.com/orgs/\(canonicalOrganization)/repos")!
+        repoURL.queryItems = [
+            URLQueryItem(name: "type", value: "all"),
+            URLQueryItem(name: "per_page", value: "100"),
+            URLQueryItem(name: "sort", value: "full_name")
+        ]
+        var repositories: [GitHubRepositorySummary] = []
+        var nextRepositoryURL: URL? = repoURL.url
+        var seenRepositoryURLs = Set<URL>()
+        while let url = nextRepositoryURL {
+            guard seenRepositoryURLs.insert(url).inserted, seenRepositoryURLs.count <= 100 else {
+                throw GitHubAPIError.invalidResponse
+            }
+            let page: GitHubRESTPage<[GitHubRepositorySummary]> = try await restGETPage(url: url)
+            repositories.append(contentsOf: page.value)
+            nextRepositoryURL = page.next
+        }
+
+        var entries: [String: GitHubLabelCatalogEntry] = [:]
+        var repositoriesByLabel: [String: Set<String>] = [:]
+        for repository in repositories {
+            var labelsURL = URLComponents(string: "https://api.github.com/repos/\(repository.fullName)/labels")!
+            labelsURL.queryItems = [URLQueryItem(name: "per_page", value: "100")]
+            var nextLabelsURL: URL? = labelsURL.url
+            var seenLabelURLs = Set<URL>()
+            while let url = nextLabelsURL {
+                guard seenLabelURLs.insert(url).inserted, seenLabelURLs.count <= 100 else {
+                    throw GitHubAPIError.invalidResponse
+                }
+                let page: GitHubRESTPage<[GitHubRESTLabel]> = try await restGETPage(url: url)
+                for label in page.value {
+                    let key = ActionLabelRuleConfiguration.key(for: label.name)
+                    var entry = entries[key] ?? GitHubLabelCatalogEntry(
+                        key: key, name: label.name, colors: [], repositoryCount: 0
+                    )
+                    entry.colors.insert(label.color.uppercased())
+                    let repositoryKey = repository.fullName.lowercased()
+                    if repositoriesByLabel[key, default: []].insert(repositoryKey).inserted {
+                        entry.repositoryCount += 1
+                    }
+                    entries[key] = entry
+                }
+                nextLabelsURL = page.next
+            }
+        }
+        return entries.values.sorted { $0.key < $1.key }
     }
 
     func searchPullRequests(query: String) async throws -> [GitHubPullRequestNode] {
@@ -126,18 +188,25 @@ actor GitHubAPI {
             return GitHubActionDiscovery(pullRequests: [], searchDisagreementCount: 0)
         }
 
-        let searchResults = try await withThrowingTaskGroup(
-            of: [GitHubPullRequestNode].self,
-            returning: [[GitHubPullRequestNode]].self
-        ) { group in
-            for rule in configuration.enabledRules {
-                group.addTask { [self] in
-                    try await searchPullRequests(query: configuration.searchQuery(for: rule))
+        // Keep arbitrary user-selected label sets from creating an unbounded
+        // burst of concurrent Search API calls. Six lanes preserve responsive
+        // refreshes while leaving headroom for the rest of the sync pipeline.
+        var searchResults: [[GitHubPullRequestNode]] = []
+        for batch in configuration.enabledRules.chunked(into: 6) {
+            let pages = try await withThrowingTaskGroup(
+                of: [GitHubPullRequestNode].self,
+                returning: [[GitHubPullRequestNode]].self
+            ) { group in
+                for rule in batch {
+                    group.addTask { [self] in
+                        try await searchPullRequests(query: configuration.searchQuery(for: rule))
+                    }
                 }
+                var results: [[GitHubPullRequestNode]] = []
+                for try await page in group { results.append(page) }
+                return results
             }
-            var pages: [[GitHubPullRequestNode]] = []
-            for try await page in group { pages.append(page) }
-            return pages
+            searchResults.append(contentsOf: pages)
         }
         var searchNodes: [String: GitHubPullRequestNode] = [:]
         for result in searchResults {
@@ -147,23 +216,27 @@ actor GitHubAPI {
         }
         let allIDs = Set(searchNodes.keys).union(candidateIDs)
         let chunks = allIDs.sorted().chunked(into: 20)
-        let direct = try await withThrowingTaskGroup(
-            of: [GitHubActionPullRequest].self,
-            returning: [GitHubActionPullRequest].self
-        ) { group in
-            for chunk in chunks {
-                group.addTask { [self] in
-                    try await directActionPullRequests(
-                        ids: chunk,
-                        configuration: configuration,
-                        knownApplications: knownApplications,
-                        knownPullRequestUpdatedAt: knownPullRequestUpdatedAt
-                    )
+        var direct: [GitHubActionPullRequest] = []
+        for batch in chunks.chunked(into: 6) {
+            let pulls = try await withThrowingTaskGroup(
+                of: [GitHubActionPullRequest].self,
+                returning: [[GitHubActionPullRequest]].self
+            ) { group in
+                for chunk in batch {
+                    group.addTask { [self] in
+                        try await directActionPullRequests(
+                            ids: chunk,
+                            configuration: configuration,
+                            knownApplications: knownApplications,
+                            knownPullRequestUpdatedAt: knownPullRequestUpdatedAt
+                        )
+                    }
                 }
+                var results: [[GitHubActionPullRequest]] = []
+                for try await result in group { results.append(result) }
+                return results
             }
-            var pulls: [GitHubActionPullRequest] = []
-            for try await result in group { pulls.append(contentsOf: result) }
-            return pulls
+            direct.append(contentsOf: pulls.flatMap { $0 })
         }
 
         let directIDs = Set(direct.map(\.id))
@@ -199,7 +272,7 @@ actor GitHubAPI {
             let rulesByName = Dictionary(
                 uniqueKeysWithValues: configuration.enabledRules.map { ($0.labelName.lowercased(), $0) }
             )
-            let current = pull.labels.nodes.compactMap { label -> (ActionRuleConfiguration, ActionLabelNode)? in
+            let current = pull.labels.nodes.compactMap { label -> (ActionLabelRuleConfiguration, ActionLabelNode)? in
                 guard let rule = rulesByName[label.name.lowercased()] else { return nil }
                 return (rule, label)
             }
@@ -208,7 +281,7 @@ actor GitHubAPI {
             let knownByLabel = knownApplications[pull.id] ?? [:]
             let knownIdentityMatchesCurrent = current.allSatisfy { rule, label in
                 guard let known = knownByLabel[label.id] else { return false }
-                return known.ruleID == rule.id
+                return known.labelKey == rule.id
                     && known.labelName.caseInsensitiveCompare(label.name) == .orderedSame
             }
             let sourceUnchanged = knownPullRequestUpdatedAt[pull.id] == pull.updatedAt
@@ -243,7 +316,7 @@ actor GitHubAPI {
                     throw GitHubAPIError.invalidResponse
                 }
                 let known = knownByLabel[label.id].flatMap { application in
-                    application.ruleID == rule.id
+                    application.labelKey == rule.id
                         && application.labelName.caseInsensitiveCompare(label.name) == .orderedSame
                         ? application : nil
                 }
@@ -276,11 +349,12 @@ actor GitHubAPI {
                 }
                 applications.append(ActionLabelApplication(
                     pullRequestID: pull.id,
-                    ruleID: rule.id,
+                    labelKey: rule.id,
                     labelID: label.id,
                     labelEventID: resolved.eventID,
                     labelName: label.name,
                     colorHex: label.color.uppercased(),
+                    notificationLevel: rule.notificationLevel,
                     appliedAt: resolved.appliedAt,
                     seenAt: nil,
                     dismissedAt: nil
@@ -448,6 +522,18 @@ actor GitHubAPI {
         let (data, response) = try await data(for: request)
         try updateAndValidate(response: response, data: data)
         return try decoder.decode(T.self, from: data)
+    }
+
+    private func restGETPage<T: Decodable>(url: URL) async throws -> GitHubRESTPage<T> {
+        var request = authorizedRequest(url: url)
+        request.httpMethod = "GET"
+        let (data, response) = try await data(for: request)
+        try updateAndValidate(response: response, data: data)
+        guard let http = response as? HTTPURLResponse else { throw GitHubAPIError.invalidResponse }
+        return GitHubRESTPage(
+            value: try decoder.decode(T.self, from: data),
+            next: try nextPageURL(from: http)
+        )
     }
 
     private func mentionSource(
@@ -761,6 +847,32 @@ actor GitHubAPI {
 private struct GraphQLErrors: Decodable { struct Item: Decodable { let message: String }; let errors: [Item] }
 private struct GitHubErrorMessage: Decodable { let message: String }
 
+struct GitHubLabelCatalogEntry: Codable, Equatable, Identifiable, Sendable {
+    let key: String
+    let name: String
+    var colors: Set<String>
+    var repositoryCount: Int
+
+    var id: String { key }
+    var colorHex: String? { colors.sorted().first }
+}
+
+private struct GitHubRepositorySummary: Decodable {
+    let fullName: String
+
+    enum CodingKeys: String, CodingKey { case fullName = "full_name" }
+}
+
+private struct GitHubRESTLabel: Decodable {
+    let name: String
+    let color: String
+}
+
+private struct GitHubRESTPage<Value> {
+    let value: Value
+    let next: URL?
+}
+
 struct GitHubPullRequestNode: Decodable, Sendable {
     let id: String
     let number: Int
@@ -1017,7 +1129,7 @@ struct GitHubNotificationThread: Decodable, Sendable {
 struct GitHubComment: Decodable, Sendable {
     let id: Int
     let body: String
-    let htmlURL: URL
+    let htmlURL: URL?
     enum CodingKeys: String, CodingKey { case id, body, htmlURL = "html_url" }
 }
 

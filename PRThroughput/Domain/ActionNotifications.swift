@@ -26,42 +26,65 @@ enum ActionRuleID: String, Codable, CaseIterable, Sendable {
     }
 }
 
-struct ActionRuleConfiguration: Codable, Equatable, Identifiable, Sendable {
+struct ActionLabelRuleConfiguration: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var labelName: String
+    var notificationLevel: NotificationLevel
+
+    init(id: String? = nil, labelName: String, notificationLevel: NotificationLevel = .persistent) {
+        self.id = id ?? Self.key(for: labelName)
+        self.labelName = labelName
+        self.notificationLevel = notificationLevel
+    }
+
+    static func key(for labelName: String) -> String {
+        labelName.lowercased()
+    }
+}
+
+/// Compatibility shape retained for decoding and tests of the fixed-rule settings.
+struct ActionRuleConfiguration: Codable, Equatable, Sendable {
     let id: ActionRuleID
     var labelName: String
     var isEnabled: Bool
 }
 
+private typealias LegacyActionRuleConfiguration = ActionRuleConfiguration
+
 enum ActionConfigurationError: LocalizedError, Equatable {
     case invalidOrganization
     case invalidRules
-    case invalidLabel(ActionRuleID)
+    case invalidLabel
 
     var errorDescription: String? {
         switch self {
         case .invalidOrganization: "Enter a GitHub organization name using letters, numbers, or hyphens."
         case .invalidRules: "The notification rules are incomplete or duplicated."
-        case let .invalidLabel(rule): "Enter a valid GitHub label for \(rule.displayName)."
+        case .invalidLabel: "Enter a valid GitHub label."
         }
     }
 }
 
 struct ActionNotificationConfiguration: Codable, Equatable, Sendable {
-    static let schemaVersion = 2
+    static let schemaVersion = 3
     static let storageKey = "notification.actionLabels.configuration.v1"
 
     let schemaVersion: Int
     var organization: String
-    var rules: [ActionRuleConfiguration]
+    var rules: [ActionLabelRuleConfiguration]
 
     static let blank = ActionNotificationConfiguration(
         schemaVersion: schemaVersion,
         organization: "",
-        rules: ActionRuleID.allCases.map { ActionRuleConfiguration(id: $0, labelName: "", isEnabled: false) }
+        rules: []
     )
 
-    var enabledRules: [ActionRuleConfiguration] {
-        rules.filter(\.isEnabled).sorted { $0.id.priority < $1.id.priority }
+    var enabledRules: [ActionLabelRuleConfiguration] {
+        rules.sorted { lhs, rhs in
+            let lhsName = ActionLabelRuleConfiguration.key(for: lhs.labelName)
+            let rhsName = ActionLabelRuleConfiguration.key(for: rhs.labelName)
+            return lhsName == rhsName ? lhs.id < rhs.id : lhsName < rhsName
+        }
     }
 
     var isConfigured: Bool {
@@ -69,40 +92,38 @@ struct ActionNotificationConfiguration: Codable, Equatable, Sendable {
     }
 
     func validated() throws -> Self {
-        guard schemaVersion == Self.schemaVersion,
-              Set(rules.map(\.id)) == Set(ActionRuleID.allCases),
-              rules.count == ActionRuleID.allCases.count else { throw ActionConfigurationError.invalidRules }
+        guard schemaVersion == Self.schemaVersion else { throw ActionConfigurationError.invalidRules }
         let organization = organization.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard organization.range(of: #"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$"#, options: .regularExpression) != nil else {
+        guard organization.caseInsensitiveCompare("Keeper-Dating") == .orderedSame else {
             throw ActionConfigurationError.invalidOrganization
         }
         var copy = self
-        copy.organization = organization
         var enabledNames = Set<String>()
         for index in copy.rules.indices {
-            copy.rules[index].labelName = copy.rules[index].labelName.trimmingCharacters(in: .whitespacesAndNewlines)
-            if copy.rules[index].isEnabled {
-                let value = copy.rules[index].labelName
-                guard !value.isEmpty, value.count <= 50,
-                      value.rangeOfCharacter(from: .controlCharacters) == nil,
-                      !value.contains("\""), !value.contains("\\") else {
-                    throw ActionConfigurationError.invalidLabel(copy.rules[index].id)
-                }
-                guard enabledNames.insert(value.lowercased()).inserted else {
-                    throw ActionConfigurationError.invalidRules
-                }
+            let value = copy.rules[index].labelName
+            guard !value.isEmpty, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, value.count <= 100,
+                  value.rangeOfCharacter(from: .controlCharacters) == nil else {
+                throw ActionConfigurationError.invalidLabel
             }
+            let key = ActionLabelRuleConfiguration.key(for: value)
+            guard enabledNames.insert(key).inserted else {
+                throw ActionConfigurationError.invalidRules
+            }
+            copy.rules[index].id = key
         }
-        copy.rules.sort { $0.id.priority < $1.id.priority }
+        copy.organization = "Keeper-Dating"
+        copy.rules.sort { ActionLabelRuleConfiguration.key(for: $0.labelName) < ActionLabelRuleConfiguration.key(for: $1.labelName) }
         return copy
     }
 
-    func searchQuery(for rule: ActionRuleConfiguration) throws -> String {
+    func searchQuery(for rule: ActionLabelRuleConfiguration) throws -> String {
         let valid = try validated()
-        guard let rule = valid.rules.first(where: { $0.id == rule.id }), rule.isEnabled else {
-            throw ActionConfigurationError.invalidLabel(rule.id)
+        guard let rule = valid.rules.first(where: { $0.id == rule.id }) else {
+            throw ActionConfigurationError.invalidLabel
         }
-        return "org:\(valid.organization) is:pr is:open label:\"\(rule.labelName)\""
+        let escaped = rule.labelName.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "org:\(valid.organization) is:pr is:open label:\"\(escaped)\""
     }
 
     var revision: String {
@@ -115,34 +136,31 @@ struct ActionNotificationConfiguration: Codable, Equatable, Sendable {
 
     static func load(defaults: UserDefaults = .standard) -> Self {
         guard let data = defaults.data(forKey: storageKey),
-              let stored = try? JSONDecoder().decode(Self.self, from: data) else { return .blank }
-        let value: Self
-        switch stored.schemaVersion {
-        case Self.schemaVersion:
-            value = stored
-        case 1:
-            let legacyRuleIDs: Set<ActionRuleID> = [.decide, .invokeR2, .assignReviewer]
-            let rulesByID = Dictionary(stored.rules.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-            guard stored.rules.count == legacyRuleIDs.count,
-                  Set(stored.rules.map(\.id)) == legacyRuleIDs,
-                  rulesByID.count == stored.rules.count else { return .blank }
-            value = Self(
-                schemaVersion: Self.schemaVersion,
-                organization: stored.organization,
-                rules: ActionRuleID.allCases.map {
-                    rulesByID[$0] ?? ActionRuleConfiguration(id: $0, labelName: "", isEnabled: false)
-                }
-            )
-        default:
-            return .blank
+              let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let version = envelope["schemaVersion"] as? Int else { return .blank }
+        if version == Self.schemaVersion,
+           let stored = try? JSONDecoder().decode(Self.self, from: data),
+           let value = try? stored.validated() { return value }
+        guard version == 1 || version == 2,
+              let legacy = try? JSONDecoder().decode(LegacyConfiguration.self, from: data) else { return .blank }
+        let rules = legacy.rules.compactMap { rule -> ActionLabelRuleConfiguration? in
+            guard rule.isEnabled else { return nil }
+            return ActionLabelRuleConfiguration(labelName: rule.labelName, notificationLevel: .persistent)
         }
-        return (try? value.validated()) ?? .blank
+        let migrated = Self(schemaVersion: Self.schemaVersion, organization: "Keeper-Dating", rules: rules)
+        return (try? migrated.validated()) ?? .blank
     }
 
     func save(defaults: UserDefaults = .standard) throws {
         let value = try validated()
         defaults.set(try JSONEncoder().encode(value), forKey: Self.storageKey)
     }
+}
+
+private struct LegacyConfiguration: Codable {
+    let schemaVersion: Int
+    let organization: String
+    let rules: [LegacyActionRuleConfiguration]
 }
 
 enum GitHubPullRequestURL {
@@ -211,11 +229,12 @@ enum AttentionAcknowledgementPlan {
 
 struct ActionLabelApplication: Codable, Hashable, Identifiable, Sendable {
     let pullRequestID: String
-    let ruleID: ActionRuleID
+    let labelKey: String
     let labelID: String
     let labelEventID: String
     let labelName: String
     let colorHex: String
+    let notificationLevel: NotificationLevel
     let appliedAt: Date
     var seenAt: Date?
     var dismissedAt: Date?
@@ -227,6 +246,101 @@ struct ActionLabelApplication: Codable, Hashable, Identifiable, Sendable {
     var isUnseen: Bool { seenAt == nil }
     var normalizedColorHex: String? {
         colorHex.range(of: #"^[0-9A-Fa-f]{6}$"#, options: .regularExpression) == nil ? nil : colorHex.uppercased()
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case pullRequestID, labelKey, ruleID, labelID, labelEventID, labelName, colorHex
+        case notificationLevel, appliedAt, seenAt, dismissedAt, deliveredAt
+    }
+
+    init(
+        pullRequestID: String,
+        labelKey: String,
+        labelID: String,
+        labelEventID: String,
+        labelName: String,
+        colorHex: String,
+        notificationLevel: NotificationLevel = .persistent,
+        appliedAt: Date,
+        seenAt: Date?,
+        dismissedAt: Date?,
+        deliveredAt: Date? = nil
+    ) {
+        self.pullRequestID = pullRequestID
+        self.labelKey = ActionLabelRuleConfiguration.key(for: labelKey)
+        self.labelID = labelID
+        self.labelEventID = labelEventID
+        self.labelName = labelName
+        self.colorHex = colorHex
+        self.notificationLevel = notificationLevel
+        self.appliedAt = appliedAt
+        self.seenAt = seenAt
+        self.dismissedAt = dismissedAt
+        self.deliveredAt = deliveredAt
+    }
+
+    init(
+        pullRequestID: String,
+        ruleID: ActionRuleID,
+        labelID: String,
+        labelEventID: String,
+        labelName: String,
+        colorHex: String,
+        notificationLevel: NotificationLevel = .persistent,
+        appliedAt: Date,
+        seenAt: Date?,
+        dismissedAt: Date?,
+        deliveredAt: Date? = nil
+    ) {
+        self.init(
+            pullRequestID: pullRequestID,
+            labelKey: "legacy:\(ruleID.rawValue)",
+            labelID: labelID,
+            labelEventID: labelEventID,
+            labelName: labelName,
+            colorHex: colorHex,
+            notificationLevel: notificationLevel,
+            appliedAt: appliedAt,
+            seenAt: seenAt,
+            dismissedAt: dismissedAt,
+            deliveredAt: deliveredAt
+        )
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        pullRequestID = try values.decode(String.self, forKey: .pullRequestID)
+        if let key = try values.decodeIfPresent(String.self, forKey: .labelKey) {
+            labelKey = ActionLabelRuleConfiguration.key(for: key)
+        } else if let legacy = try values.decodeIfPresent(ActionRuleID.self, forKey: .ruleID) {
+            labelKey = "legacy:\(legacy.rawValue)"
+        } else {
+            labelKey = "legacy:unknown"
+        }
+        labelID = try values.decode(String.self, forKey: .labelID)
+        labelEventID = try values.decode(String.self, forKey: .labelEventID)
+        labelName = try values.decode(String.self, forKey: .labelName)
+        colorHex = try values.decode(String.self, forKey: .colorHex)
+        notificationLevel = try values.decodeIfPresent(NotificationLevel.self, forKey: .notificationLevel) ?? .persistent
+        appliedAt = try values.decode(Date.self, forKey: .appliedAt)
+        seenAt = try values.decodeIfPresent(Date.self, forKey: .seenAt)
+        dismissedAt = try values.decodeIfPresent(Date.self, forKey: .dismissedAt)
+        deliveredAt = try values.decodeIfPresent(Date.self, forKey: .deliveredAt)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(pullRequestID, forKey: .pullRequestID)
+        try values.encode(labelKey, forKey: .labelKey)
+        try values.encode(labelID, forKey: .labelID)
+        try values.encode(labelEventID, forKey: .labelEventID)
+        try values.encode(labelName, forKey: .labelName)
+        try values.encode(colorHex, forKey: .colorHex)
+        try values.encode(notificationLevel, forKey: .notificationLevel)
+        try values.encode(appliedAt, forKey: .appliedAt)
+        try values.encodeIfPresent(seenAt, forKey: .seenAt)
+        try values.encodeIfPresent(dismissedAt, forKey: .dismissedAt)
+        try values.encodeIfPresent(deliveredAt, forKey: .deliveredAt)
     }
 }
 

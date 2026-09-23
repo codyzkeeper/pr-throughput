@@ -5,6 +5,22 @@ enum NotificationLevel: String, Codable, CaseIterable, Sendable {
     case loud
     case persistent
     case quiet
+
+    var priority: Int {
+        switch self {
+        case .loud: 0
+        case .persistent: 1
+        case .quiet: 2
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .loud: "Loud"
+        case .persistent: "Persistent"
+        case .quiet: "Quiet"
+        }
+    }
 }
 
 enum AttentionKind: String, Codable, Sendable {
@@ -104,15 +120,23 @@ struct AttentionItem: Codable, Hashable, Identifiable, Sendable {
 
     var highestPriorityUnseenApplication: ActionLabelApplication? {
         applications.filter(\.isUnseen).min {
-            if $0.ruleID.priority != $1.ruleID.priority { return $0.ruleID.priority < $1.ruleID.priority }
-            return $0.appliedAt > $1.appliedAt
+            if $0.notificationLevel.priority != $1.notificationLevel.priority {
+                return $0.notificationLevel.priority < $1.notificationLevel.priority
+            }
+            let lhs = ActionLabelRuleConfiguration.key(for: $0.labelName)
+            let rhs = ActionLabelRuleConfiguration.key(for: $1.labelName)
+            return lhs == rhs ? $0.appliedAt > $1.appliedAt : lhs < rhs
         }
     }
 
     var highestPriorityUndeliveredApplication: ActionLabelApplication? {
         applications.filter { $0.isUnseen && $0.deliveredAt == nil }.min {
-            if $0.ruleID.priority != $1.ruleID.priority { return $0.ruleID.priority < $1.ruleID.priority }
-            return $0.appliedAt > $1.appliedAt
+            if $0.notificationLevel.priority != $1.notificationLevel.priority {
+                return $0.notificationLevel.priority < $1.notificationLevel.priority
+            }
+            let lhs = ActionLabelRuleConfiguration.key(for: $0.labelName)
+            let rhs = ActionLabelRuleConfiguration.key(for: $1.labelName)
+            return lhs == rhs ? $0.appliedAt > $1.appliedAt : lhs < rhs
         }
     }
 
@@ -132,8 +156,12 @@ struct AttentionItem: Codable, Hashable, Identifiable, Sendable {
 
     var highestPriorityActiveApplication: ActionLabelApplication? {
         applications.min {
-            if $0.ruleID.priority != $1.ruleID.priority { return $0.ruleID.priority < $1.ruleID.priority }
-            return $0.appliedAt > $1.appliedAt
+            if $0.notificationLevel.priority != $1.notificationLevel.priority {
+                return $0.notificationLevel.priority < $1.notificationLevel.priority
+            }
+            let lhs = ActionLabelRuleConfiguration.key(for: $0.labelName)
+            let rhs = ActionLabelRuleConfiguration.key(for: $1.labelName)
+            return lhs == rhs ? $0.appliedAt > $1.appliedAt : lhs < rhs
         }
     }
 
@@ -144,12 +172,14 @@ struct AttentionItem: Codable, Hashable, Identifiable, Sendable {
         number: Int,
         url: URL,
         applications: [ActionLabelApplication],
+        level: NotificationLevel? = nil,
         deliveredApplicationRevision: String? = nil,
         sourceUpdatedAt: Date? = nil
     ) -> AttentionItem {
         let revision = Self.actionRevision(applications)
         return AttentionItem(
-            id: "action:\(pullRequestID)", kind: .actionLabels, level: .persistent,
+            id: "action:\(pullRequestID)", kind: .actionLabels,
+            level: level ?? applications.map(\.notificationLevel).min(by: { $0.priority < $1.priority }) ?? .persistent,
             title: title, repository: repository, url: url,
             createdAt: applications.map(\.appliedAt).max() ?? .distantPast,
             revisionID: revision, pullRequestID: pullRequestID,

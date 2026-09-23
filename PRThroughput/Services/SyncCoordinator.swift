@@ -14,6 +14,10 @@ actor SyncCoordinator {
         self.api = api
     }
 
+    func labelCatalog(organization: String = "Keeper-Dating") async throws -> [GitHubLabelCatalogEntry] {
+        try await api.labelCatalog(organization: organization)
+    }
+
     /// Recent timeline queries return a suffix whose positions restart at zero.
     /// Rebase that suffix against any overlapping cached event before replacing it,
     /// so equal-timestamp ordering remains stable between full and fast refreshes.
@@ -403,7 +407,7 @@ actor SyncCoordinator {
         }
 
         let priorItems = previous?.metadata.actionConfigurationRevision == revision
-            ? previous?.attentionItems.filter { $0.kind == .actionLabels } ?? []
+            ? Self.compatibleActionItems(previous?.attentionItems ?? [], configuration: configuration)
             : []
         // Search is the complete organization-wide discovery lane, but GitHub's
         // search index can lag behind a label mutation. Directly recheck a bounded
@@ -480,13 +484,50 @@ actor SyncCoordinator {
         snapshot.metadata.actionConfigurationRevision = revision
         snapshot.metadata.lastActionLabelError = error.localizedDescription
         if previous?.metadata.actionConfigurationRevision == revision {
-            snapshot.attentionItems = previous?.attentionItems.filter { $0.kind == .actionLabels } ?? []
+            snapshot.attentionItems = Self.compatibleActionItems(
+                previous?.attentionItems ?? [],
+                configuration: configuration
+            )
             snapshot.metadata.lastSuccessfulActionLabelSync = previous?.metadata.lastSuccessfulActionLabelSync
             snapshot.metadata.actionSearchDisagreementCount = previous?.metadata.actionSearchDisagreementCount
         } else {
             snapshot.attentionItems = []
             snapshot.metadata.lastSuccessfulActionLabelSync = nil
             snapshot.metadata.actionSearchDisagreementCount = nil
+        }
+    }
+
+    /// A cache written by an older fixed-rule build may contain a legacy rule
+    /// key that no longer identifies the configured arbitrary label. Never
+    /// preserve or use that fact after a failed refresh; GitHub must re-verify
+    /// the current label before it becomes visible again.
+    private static func compatibleActionItems(
+        _ items: [AttentionItem],
+        configuration: ActionNotificationConfiguration
+    ) -> [AttentionItem] {
+        let rulesByKey = Dictionary(
+            uniqueKeysWithValues: (try? configuration.validated())?.enabledRules.map {
+                ($0.id, $0.labelName.lowercased())
+            } ?? []
+        )
+        return items.compactMap { item in
+            guard item.kind == .actionLabels else { return nil }
+            guard let pullRequestID = item.pullRequestID,
+                  let pullRequestNumber = item.pullRequestNumber else { return nil }
+            let applications = item.applications.filter {
+                rulesByKey[$0.labelKey] == $0.labelName.lowercased()
+            }
+            guard !applications.isEmpty else { return nil }
+            return AttentionItem.action(
+                pullRequestID: pullRequestID,
+                title: item.title,
+                repository: item.repository,
+                number: pullRequestNumber,
+                url: item.url,
+                applications: applications,
+                deliveredApplicationRevision: item.deliveredApplicationRevision,
+                sourceUpdatedAt: item.actionSourceUpdatedAt
+            )
         }
     }
 

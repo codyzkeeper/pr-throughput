@@ -23,7 +23,7 @@ The initial public build is ad-hoc signed because this project does not yet have
 
 The app does not mutate GitHub data. It stores the OAuth token in your local Keychain and does not persist source code, diffs, comments, or review bodies. No account data, token, metrics cache, preferences, or notifications are included in release artifacts. See [PRIVACY.md](PRIVACY.md) for the complete data-handling summary.
 
-Configure an organization and up to four ordered action labels in Settings. GitHub's current labels and per-repository colors are authoritative: adding a configured label creates a quiet banner, feed row, and colored menu-bar dot; removing it or closing the PR removes that state. Multiple labels consolidate into one PR row. Seeing the row, opening it, opening all listed PRs, or opening its macOS notification clears the dot while leaving the row visible; only GitHub label removal or PR closure removes it.
+Configure any number of action labels in Settings by choosing from the live label catalog for the `Keeper-Dating` organization. Each selected label can use Loud, Persistent, or Quiet notification behavior. GitHub's current labels and per-repository colors are authoritative: adding a configured label creates the corresponding notification, feed row, and colored menu-bar dot when applicable; removing it or closing the PR removes that state. Multiple labels consolidate into one PR row, with the strongest level determining the row's presentation. Seeing the row, opening it, opening all listed PRs, or opening its macOS notification clears the dot while leaving the row visible; only GitHub label removal or PR closure removes it. A configured label that is temporarily absent from the catalog remains configured and is shown as unavailable until it returns.
 
 ## Configure GitHub authentication
 
@@ -68,13 +68,16 @@ security find-generic-password -w -a oauth-token -s app.prthroughput.PRThroughpu
 
 The token is consumed through standard input and is never printed, persisted, or included in process arguments.
 
-To validate action labels too, set `PR_THROUGHPUT_ACTION_ORGANIZATION` and up to four
-`PR_THROUGHPUT_ACTION_LABEL_1`, `_2`, `_3`, and `_4` environment variables. The harness checks
+To validate action labels too, set `PR_THROUGHPUT_ACTION_ORGANIZATION` (normally `Keeper-Dating`) and
+`PR_THROUGHPUT_ACTION_LABELS` to a comma-separated list. Add `|loud`, `|persistent`, or `|quiet`
+after a label to exercise its notification level. The harness checks
 the same direct-label authority, colors, safe PR URLs, configuration revision, and
 reconciliation invariants used by the app; it still performs no GitHub writes.
 For a focused low-cost check, pass `--action-only` and provide comma-separated GraphQL
 PR node IDs in `PR_THROUGHPUT_ACTION_CANDIDATE_IDS`; this is useful when deliberately
 testing around GitHub search-index lag without repeating the 30-day metrics crawl.
+Pass `--label-catalog` for a read-only catalog smoke test across every accessible
+`Keeper-Dating` repository.
 
 To capture the canonical KPI snapshot used by the menu-bar UI or another local automation:
 
