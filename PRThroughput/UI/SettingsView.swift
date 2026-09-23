@@ -19,7 +19,8 @@ struct SettingsView: View {
                 Toggle("PR approved — quiet", isOn: $approved)
                 Toggle("PR merged — quiet", isOn: $merged)
             }
-            Section("Action labels") {
+
+            Section {
                 Text("Choose labels from accessible Keeper-Dating repositories and set how each one notifies you.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -43,12 +44,21 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
+            } header: {
+                Text("Action labels")
+            }
+
+            Section {
                 if actionDraft.rules.isEmpty {
                     Text("No labels selected.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(actionDraft.rules) { rule in
+                    // Use offsets for this local draft list. Catalog entries use
+                    // label keys, so sharing those IDs here makes SwiftUI reuse
+                    // the catalog row and hide the per-label behavior control.
+                    ForEach(actionDraft.rules.indices, id: \.self) { index in
+                        let rule = actionDraft.rules[index]
                         HStack(spacing: 8) {
                             Circle()
                                 .fill(color(for: rule))
@@ -60,14 +70,25 @@ struct SettingsView: View {
                                     .font(.caption2)
                                     .foregroundStyle(.orange)
                             }
-                            Spacer()
-                            Picker("Notification", selection: binding(for: rule.id).notificationLevel) {
+                            Spacer(minLength: 8)
+                            Menu {
                                 ForEach(NotificationLevel.allCases, id: \.self) { level in
-                                    Text(level.displayName).tag(level)
+                                    Button {
+                                        actionDraft.rules[index].notificationLevel = level
+                                    } label: {
+                                        if level == rule.notificationLevel {
+                                            Label(level.displayName, systemImage: "checkmark")
+                                        } else {
+                                            Text(level.displayName)
+                                        }
+                                    }
                                 }
+                            } label: {
+                                Label(rule.notificationLevel.displayName, systemImage: "bell")
+                                    .frame(minWidth: 105, alignment: .leading)
                             }
-                            .labelsHidden()
-                            .frame(width: 110)
+                            .menuStyle(.borderlessButton)
+                            .help("Choose notification behavior for \(rule.labelName)")
                             Button { remove(rule.id) } label: {
                                 Image(systemName: "minus.circle")
                             }
@@ -76,15 +97,20 @@ struct SettingsView: View {
                         }
                     }
                 }
-                let available = filteredCatalog
+            } header: {
+                Text("Selected labels (\(actionDraft.rules.count))")
+            } footer: {
+                Text("Each label keeps its own notification behavior. Changes take effect after Save.")
+                    .font(.caption)
+            }
+
+            Section {
+                let available = filteredCatalog.filter { !isSelected($0) }
                 if !available.isEmpty {
-                    Text("Available labels")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
                     ForEach(available) { entry in
                         Button { addOrRemove(entry) } label: {
                             HStack(spacing: 8) {
-                                Image(systemName: isSelected(entry) ? "checkmark.square.fill" : "square")
+                                Image(systemName: "plus.square")
                                 Circle().fill(color(for: entry)).frame(width: 10, height: 10)
                                 Text(entry.name).lineLimit(1)
                                 Spacer()
@@ -99,7 +125,16 @@ struct SettingsView: View {
                     Text("No labels loaded yet. Refresh after signing in.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                } else {
+                    Text(labelSearch.isEmpty ? "All catalog labels are selected." : "No unselected labels match your search.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
+            } header: {
+                Text("Add labels")
+            }
+
+            Section {
                 if let actionError {
                     Text(actionError).font(.caption).foregroundStyle(.red)
                 }
@@ -121,6 +156,8 @@ struct SettingsView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(actionDraft == model.actionConfiguration)
                 }
+            } header: {
+                Text("Apply changes")
             }
             Section("GitHub") {
                 LabeledContent("Account", value: accountValue)
@@ -181,16 +218,6 @@ struct SettingsView: View {
 
     private func isAvailable(_ rule: ActionLabelRuleConfiguration) -> Bool {
         model.labelCatalog.contains { $0.key == rule.id }
-    }
-
-    private func binding(for id: String) -> Binding<ActionLabelRuleConfiguration> {
-        Binding(
-            get: { actionDraft.rules.first(where: { $0.id == id }) ?? ActionLabelRuleConfiguration(labelName: "", notificationLevel: .persistent) },
-            set: { updated in
-                guard let index = actionDraft.rules.firstIndex(where: { $0.id == id }) else { return }
-                actionDraft.rules[index] = updated
-            }
-        )
     }
 
     private func addOrRemove(_ entry: GitHubLabelCatalogEntry) {
