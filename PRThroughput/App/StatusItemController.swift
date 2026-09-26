@@ -129,8 +129,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             string: count,
             attributes: [.font: font, .foregroundColor: NSColor.white]
         )
-        if !model.unseenItems.isEmpty {
-            let dotColor = model.unseenItems.compactMap(\.highestPriorityUnseenApplication).min {
+        if !model.persistentAttentionItems.isEmpty {
+            let dotColor = model.persistentAttentionItems.compactMap(\.highestPriorityPersistentApplication).min {
                 if $0.notificationLevel.priority != $1.notificationLevel.priority { return $0.notificationLevel.priority < $1.notificationLevel.priority }
                 return ActionLabelRuleConfiguration.key(for: $0.labelName) < ActionLabelRuleConfiguration.key(for: $1.labelName)
             }.flatMap { NSColor(actionHex: $0.colorHex) } ?? .systemRed
@@ -193,17 +193,17 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         guard model.snapshot != nil, model.isDataVerified else {
             return "Syncing GitHub history; verified totals are not yet available"
         }
-        let attentionCount = model.unseenItems.count
+        let attentionCount = model.persistentAttentionItems.count
         let assigned = "\(model.assignedCount) open pull requests assigned to you"
         guard attentionCount > 0 else { return assigned }
-        let highest = model.unseenItems.compactMap(\.highestPriorityUnseenApplication)
+        let highest = model.persistentAttentionItems.compactMap(\.highestPriorityPersistentApplication)
             .min {
                 if $0.notificationLevel.priority != $1.notificationLevel.priority {
                     return $0.notificationLevel.priority < $1.notificationLevel.priority
                 }
                 return ActionLabelRuleConfiguration.key(for: $0.labelName) < ActionLabelRuleConfiguration.key(for: $1.labelName)
             }?.labelName
-        return "\(assigned), \(attentionCount) unseen action\(attentionCount == 1 ? "" : "s")\(highest.map { ", highest priority \($0)" } ?? "")"
+        return "\(assigned), \(attentionCount) persistent action\(attentionCount == 1 ? "" : "s")\(highest.map { ", highest priority \($0)" } ?? "")"
     }
 
     @objc private func togglePopover() {

@@ -154,9 +154,35 @@ final class ActionNotificationTests: XCTestCase {
         XCTAssertFalse(AppModel.isVisibleInAttentionFeed(quietAction))
         XCTAssertTrue(AppModel.isVisibleInAttentionFeed(persistentAction))
         XCTAssertTrue(AppModel.isVisibleInAttentionFeed(mention))
+        XCTAssertFalse(AppModel.hasPersistentAttention(quietAction))
+        XCTAssertTrue(AppModel.hasPersistentAttention(persistentAction))
+        XCTAssertFalse(AppModel.hasPersistentAttention(mention))
         XCTAssertFalse(AppModel.hasUnseenAttention(quietAction))
         XCTAssertTrue(AppModel.hasUnseenAttention(persistentAction))
         XCTAssertTrue(AppModel.hasUnseenAttention(mention))
+    }
+
+    func testPersistentMenuBarIndicatorRemainsAfterActionRowIsSeen() {
+        var seenPersistent = application(rule: .decide, event: "persistent", color: "B60205", level: .persistent)
+        seenPersistent.seenAt = now
+        let item = AttentionItem.action(
+            pullRequestID: "persistent-seen", title: "Seen but still labeled", repository: "org/repo", number: 27,
+            url: URL(string: "https://github.com/org/repo/pull/27")!, applications: [seenPersistent]
+        )
+
+        XCTAssertFalse(AppModel.hasUnseenAttention(item))
+        XCTAssertTrue(AppModel.hasPersistentAttention(item))
+        XCTAssertNotNil(item.highestPriorityPersistentApplication)
+    }
+
+    func testPersistentMenuBarIndicatorClearsWhenGitHubLabelIsRemoved() {
+        let item = AttentionItem.action(
+            pullRequestID: "removed", title: "No longer labeled", repository: "org/repo", number: 28,
+            url: URL(string: "https://github.com/org/repo/pull/28")!, applications: []
+        )
+
+        XCTAssertFalse(AppModel.hasPersistentAttention(item))
+        XCTAssertNil(item.highestPriorityPersistentApplication)
     }
 
     func testPresentationStateOnlyCarriesAcrossIdenticalEventIDs() {
