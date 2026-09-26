@@ -103,6 +103,13 @@ final class AppModel: ObservableObject {
         snapshot?.attentionItems.filter(Self.hasUnseenAttention) ?? []
     }
 
+    /// Menu-bar persistence follows the active GitHub label, not local seen
+    /// state. A persistent action label therefore keeps the colored dot visible
+    /// until a refresh confirms that GitHub removed the label or closed the PR.
+    var persistentAttentionItems: [AttentionItem] {
+        snapshot?.attentionItems.filter(Self.hasPersistentAttention) ?? []
+    }
+
     nonisolated static func isVisibleInAttentionFeed(_ item: AttentionItem) -> Bool {
         guard item.isActive else { return false }
         guard item.kind == .actionLabels else { return true }
@@ -113,6 +120,12 @@ final class AppModel: ObservableObject {
         guard item.isUnseen else { return false }
         guard item.kind == .actionLabels else { return true }
         return item.applications.contains { $0.notificationLevel == .persistent && $0.isUnseen }
+    }
+
+    nonisolated static func hasPersistentAttention(_ item: AttentionItem) -> Bool {
+        guard item.isActive else { return false }
+        guard item.kind == .actionLabels else { return false }
+        return item.applications.contains { $0.notificationLevel == .persistent }
     }
 
     var isStale: Bool {
@@ -451,7 +464,19 @@ final class AppModel: ObservableObject {
                 errorMessage = "The action-label configuration was saved, but the derived cache could not be cleared: \(error.localizedDescription)"
             }
         }
-        Task { await refreshActionsOnly() }
+        // A settings window can emit several autosaves in quick succession (for
+        // example, selecting a label and immediately choosing its behavior).
+        // If one action refresh is already in flight, the next call is skipped by
+        // the single-flight guard. Retry once when the saved revision changed so
+        // the newest configuration is refreshed immediately instead of waiting
+        // for the 15-second background cadence.
+        let savedRevision = configuration.revision
+        Task { [weak self] in
+            guard let self else { return }
+            await self.refreshActionsOnly()
+            guard self.actionConfiguration.revision != savedRevision else { return }
+            await self.refreshActionsOnly()
+        }
     }
 
     func refreshLabelCatalog(force: Bool = false) async {

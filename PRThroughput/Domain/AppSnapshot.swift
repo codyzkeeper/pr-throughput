@@ -165,6 +165,17 @@ struct AttentionItem: Codable, Hashable, Identifiable, Sendable {
         }
     }
 
+    /// Persistent labels keep the menu-bar indicator present for as long as
+    /// GitHub reports the label on the open PR. Seeing the row only clears the
+    /// unseen state; it does not clear this active-label indicator.
+    var highestPriorityPersistentApplication: ActionLabelApplication? {
+        applications.filter { $0.notificationLevel == .persistent }.min {
+            let lhs = ActionLabelRuleConfiguration.key(for: $0.labelName)
+            let rhs = ActionLabelRuleConfiguration.key(for: $1.labelName)
+            return lhs == rhs ? $0.appliedAt > $1.appliedAt : lhs < rhs
+        }
+    }
+
     static func action(
         pullRequestID: String,
         title: String,

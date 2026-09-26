@@ -74,7 +74,7 @@ struct SettingsView: View {
                             Menu {
                                 ForEach(NotificationLevel.allCases, id: \.self) { level in
                                     Button {
-                                        actionDraft.rules[index].notificationLevel = level
+                                        setNotificationLevel(level, for: rule.id)
                                     } label: {
                                         if level == rule.notificationLevel {
                                             Label(level.displayName, systemImage: "checkmark")
@@ -100,7 +100,7 @@ struct SettingsView: View {
             } header: {
                 Text("Selected labels (\(actionDraft.rules.count))")
             } footer: {
-                Text("Each label keeps its own notification behavior. Changes take effect after Save.")
+                Text("Each label keeps its own notification behavior. Changes save automatically.")
                     .font(.caption)
             }
 
@@ -134,30 +134,13 @@ struct SettingsView: View {
                 Text("Add labels")
             }
 
-            Section {
-                if let actionError {
-                    Text(actionError).font(.caption).foregroundStyle(.red)
+            if let actionError {
+                Section("Action-label settings") {
+                    Text(actionError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                    Button("Retry save") { saveActionDraft() }
                 }
-                HStack {
-                    Spacer()
-                    Button("Revert") {
-                        actionDraft = model.actionConfiguration
-                        actionError = nil
-                    }
-                    Button("Save") {
-                        do {
-                            try model.saveActionConfiguration(actionDraft)
-                            actionDraft = model.actionConfiguration
-                            actionError = nil
-                        } catch {
-                            actionError = error.localizedDescription
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(actionDraft == model.actionConfiguration)
-                }
-            } header: {
-                Text("Apply changes")
             }
             Section("GitHub") {
                 LabeledContent("Account", value: accountValue)
@@ -227,10 +210,28 @@ struct SettingsView: View {
             actionDraft.rules.append(ActionLabelRuleConfiguration(labelName: entry.name))
             actionDraft.rules.sort { $0.id < $1.id }
         }
+        saveActionDraft()
     }
 
     private func remove(_ id: String) {
         actionDraft.rules.removeAll { $0.id == id }
+        saveActionDraft()
+    }
+
+    private func setNotificationLevel(_ level: NotificationLevel, for id: String) {
+        guard let index = actionDraft.rules.firstIndex(where: { $0.id == id }) else { return }
+        actionDraft.rules[index].notificationLevel = level
+        saveActionDraft()
+    }
+
+    private func saveActionDraft() {
+        do {
+            try model.saveActionConfiguration(actionDraft)
+            actionDraft = model.actionConfiguration
+            actionError = nil
+        } catch {
+            actionError = error.localizedDescription
+        }
     }
 
     private func color(for rule: ActionLabelRuleConfiguration) -> Color {
